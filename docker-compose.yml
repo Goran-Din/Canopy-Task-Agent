@@ -1,69 +1,44 @@
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: task-agent-app
+  agent:
+    build: .
+    container_name: canopy-task-agent
     restart: unless-stopped
+    env_file: .env
     ports:
-      - "${PORT:-3000}:3000"
-    env_file:
-      - .env
+      - '3100:3100'
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - ./logs:/app/logs
     networks:
-      - task-agent-net
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1))"]
-      interval: 30s
-      timeout: 10s
-      start_period: 15s
-      retries: 3
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: task-agent-worker
-    restart: unless-stopped
-    command: ["node", "src/workers/index.js"]
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
+      - agent-network
     volumes:
-      - ./logs:/app/logs
-    networks:
-      - task-agent-net
+      - agent_logs:/app/logs
 
   db:
     image: postgres:16-alpine
-    container_name: task-agent-db
+    container_name: canopy-agent-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: taskagent
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-      POSTGRES_DB: taskagent
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: canopy_agent
+      POSTGRES_USER: canopy_agent
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - canopy_agent_db:/var/lib/postgresql/data
     networks:
-      - task-agent-net
+      - agent-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U taskagent"]
-      interval: 10s
+      test: ['CMD-SHELL', 'pg_isready -U canopy_agent -d canopy_agent']
+      interval: 5s
       timeout: 5s
-      start_period: 10s
       retries: 5
-
-volumes:
-  pgdata:
+      start_period: 10s
 
 networks:
-  task-agent-net:
+  agent-network:
     driver: bridge
+
+volumes:
+  canopy_agent_db:
+    name: canopy_agent_db
+  agent_logs:
+    name: canopy_agent_logs
