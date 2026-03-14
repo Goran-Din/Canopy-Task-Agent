@@ -60,7 +60,7 @@ export async function createTask(
     .filter(Boolean)
     .join('\n\n');
 
-  const response = await vikunjaApi.post(`/projects/${config.vikunja.projects.fieldOps}/tasks`, {
+  const response = await vikunjaApi.put(`/projects/${config.vikunja.projects.fieldOps}/tasks`, {
     title: taskTitle,
     description,
     due_date: dueDate,
