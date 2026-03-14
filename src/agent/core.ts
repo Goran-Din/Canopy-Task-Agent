@@ -24,8 +24,11 @@ async function executeToolCall(
         const assigneeName = (input.assigned_to || '').toLowerCase();
         const assigneeIdMap: Record<string, number> = {
           goran: 1996235953,
+          erick: 8049966920,
+          marcin: 8559729036,
           mark: 5028364135,
           hristina: 594423613,
+          gordana: 6712338568,
         };
         const assigneeTelegramId = assigneeIdMap[assigneeName] || user.telegram_id;
         const result = await createTask(input, user.telegram_id, assigneeTelegramId);
