@@ -1,0 +1,155 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { config } from '../config';
+import { buildSystemPrompt } from './systemPrompt';
+import { toolDefinitions } from './tools';
+import { getConversationHistory, saveConversationTurn } from '../db/queries';
+import { createTask } from '../tools/vikunja';
+import { getJobStatus, updateJobStatus } from '../tools/servicem8';
+import { updateTaskStatus } from '../tools/vikunja';
+import { notifyUser } from '../tools/telegram_notify';
+import { queryXeroInvoices } from '../tools/xero';
+import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, NotifyUserInput, XeroQueryInput } from '../types';
+
+const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+async function executeToolCall(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  user: User
+): Promise<string> {
+  try {
+    switch (toolName) {
+      case 'create_task': {
+        const input = toolInput as unknown as CreateTaskInput;
+        const assigneeName = (input.assigned_to || '').toLowerCase();
+        const assigneeIdMap: Record<string, number> = {
+          goran: 1996235953,
+          mark: 5028364135,
+          hristina: 594423613,
+        };
+        const assigneeTelegramId = assigneeIdMap[assigneeName] || user.telegram_id;
+        const result = await createTask(input, user.telegram_id, assigneeTelegramId);
+        return JSON.stringify(result);
+      }
+
+      case 'update_task_status': {
+        const input = toolInput as unknown as UpdateTaskInput;
+        const result = await updateTaskStatus(input);
+        return JSON.stringify(result);
+      }
+
+      case 'get_job_status': {
+        const input = toolInput as unknown as GetJobStatusInput;
+        const result = await getJobStatus(input);
+        return JSON.stringify(result);
+      }
+
+      case 'update_job_status': {
+        const input = toolInput as unknown as UpdateJobStatusInput;
+        const result = await updateJobStatus(input);
+        return JSON.stringify(result);
+      }
+
+      case 'notify_user': {
+        const input = toolInput as unknown as NotifyUserInput;
+        const result = await notifyUser(input);
+        return JSON.stringify(result);
+      }
+
+      case 'query_xero_invoices': {
+        const input = toolInput as unknown as XeroQueryInput;
+        const result = await queryXeroInvoices(input);
+        return JSON.stringify(result);
+      }
+
+      default:
+        return JSON.stringify({ error: `Unknown tool: ${toolName}` });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`Tool ${toolName} failed:`, message);
+    return JSON.stringify({ error: message });
+  }
+}
+
+export async function runAgent(user: User, userMessage: string): Promise<string> {
+  const history = await getConversationHistory(user.telegram_id);
+
+  await saveConversationTurn(user.telegram_id, 'user', userMessage);
+
+  const systemPrompt = buildSystemPrompt(
+    user.name,
+    user.role,
+    new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    })
+  );
+
+  const messages: Anthropic.MessageParam[] = [
+    ...history.map((turn) => ({
+      role: turn.role as 'user' | 'assistant',
+      content: turn.content,
+    })),
+    { role: 'user', content: userMessage },
+  ];
+
+  let response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages,
+    tools: toolDefinitions,
+  });
+
+  const toolResultMessages: Anthropic.MessageParam[] = [];
+
+  while (response.stop_reason === 'tool_use') {
+    const assistantMessage: Anthropic.MessageParam = {
+      role: 'assistant',
+      content: response.content,
+    };
+    toolResultMessages.push(assistantMessage);
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+
+    for (const block of response.content) {
+      if (block.type === 'tool_use') {
+        const result = await executeToolCall(
+          block.name,
+          block.input as Record<string, unknown>,
+          user
+        );
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: result,
+        });
+      }
+    }
+
+    toolResultMessages.push({
+      role: 'user',
+      content: toolResults,
+    });
+
+    response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [...messages, ...toolResultMessages],
+      tools: toolDefinitions,
+    });
+  }
+
+  const finalText = response.content
+    .filter((block) => block.type === 'text')
+    .map((block) => (block as Anthropic.TextBlock).text)
+    .join('\n');
+
+  await saveConversationTurn(user.telegram_id, 'assistant', finalText);
+
+  return finalText;
+}
