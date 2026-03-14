@@ -1,0 +1,15 @@
+{
+  "name": "canopy-task-agent",
+  "version": "0.1.0",
+  "description": "AI-powered task management agent for Sunset Services US",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "worker": "node src/workers/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "private": true
+}
