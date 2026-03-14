@@ -27,13 +27,13 @@ function getLabelId(jobType: string): number {
 function resolveAssigneeVikunjaId(name: string): number {
   const map: Record<string, number> = {
     goran: 1,
-    erick: 2,
-    marcin: 3,
-    mark: 4,
-    hristina: 5,
-    gordana: 6,
+    erick: 7,
+    marcin: 8,
+    mark: 9,
+    hristina: 10,
+    gordana: 11,
   };
-  return map[name.toLowerCase()] ?? 4;
+  return map[name.toLowerCase()] ?? 9;
 }
 
 export async function createTask(
