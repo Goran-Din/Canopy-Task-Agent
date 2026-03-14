@@ -42,7 +42,7 @@ export const toolDefinitions: Anthropic.Tool[] = [
           description: 'Additional context for the assignee — site access, materials, etc.',
         },
       },
-      required: ['sm8_client_name', 'task_description', 'assigned_to', 'job_type'],
+      required: ['task_description', 'assigned_to', 'job_type'],
     },
   },
   {

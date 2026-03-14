@@ -23,7 +23,7 @@ export interface JobStatus {
 }
 
 export interface CreateTaskInput {
-  sm8_client_name: string;
+  sm8_client_name?: string;
   task_description: string;
   assigned_to: string;
   job_type: 'lawn_care' | 'hardscape' | 'snow_removal' | 'irrigation' | 'cleanup' | 'other';

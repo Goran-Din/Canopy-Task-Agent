@@ -48,7 +48,9 @@ export async function createTask(
     ? new Date(input.due_date).toISOString()
     : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const taskTitle = `${input.sm8_client_name} — ${input.task_description.substring(0, 60)}`;
+  const taskTitle = input.sm8_client_name
+    ? `${input.sm8_client_name} — ${input.task_description.substring(0, 60)}`
+    : input.task_description.substring(0, 80);
 
   const description = [
     input.task_description,
@@ -75,7 +77,7 @@ export async function createTask(
     assigned_to: assigneeTelegramId,
     created_by: createdByTelegramId,
     sm8_job_uuid: input.sm8_job_id,
-    sm8_client_name: input.sm8_client_name,
+    sm8_client_name: input.sm8_client_name || undefined,
     job_type: input.job_type,
     vikunja_label_id: labelId,
   });

@@ -80,15 +80,24 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
 
   await saveConversationTurn(user.telegram_id, 'user', userMessage);
 
+  const currentDate = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'America/Chicago',
+  });
+  const currentTime = new Date().toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'America/Chicago',
+    timeZoneName: 'short',
+  });
+
   const systemPrompt = buildSystemPrompt(
     user.name,
     user.role,
-    new Date().toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    })
+    `${currentDate} · ${currentTime}`
   );
 
   const messages: Anthropic.MessageParam[] = [
