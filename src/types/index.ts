@@ -47,7 +47,7 @@ export interface GetJobStatusInput {
 
 export interface UpdateJobStatusInput {
   sm8_job_id: string;
-  new_status: 'Work Order' | 'In Progress' | 'Invoice' | 'Completed';
+  new_status: 'Quote' | 'Work Order' | 'Unsuccessful' | 'Completed';
   notes?: string;
 }
 

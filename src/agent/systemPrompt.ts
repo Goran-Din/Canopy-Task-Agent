@@ -41,10 +41,12 @@ JOB STATUS UPDATES:
 - Do NOT call get_job_status first to verify the job exists — the update tool will find it automatically
 - Pass the job number exactly as the user gave it (e.g. "26") as the sm8_job_id parameter
 - The tool will resolve the job number to the correct UUID internally
+- Valid ServiceM8 statuses are: Quote, Work Order, Unsuccessful, Completed
+- When a job is done, use "Completed" not "Invoice"
 
 TASK COMPLETION (Mark, Marcin):
 - Update Vikunja task status to done via update_task_status
-- Update ServiceM8 job status to Invoice via update_job_status
+- Update ServiceM8 job status to Completed via update_job_status
 - Notify Hristina AND Gordana: job is ready to invoice
 - Notify the Sunset Ops group chat with a completion summary
 - Confirm back to the person who completed it

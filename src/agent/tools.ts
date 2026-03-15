@@ -102,8 +102,8 @@ export const toolDefinitions: Anthropic.Tool[] = [
         },
         new_status: {
           type: 'string',
-          enum: ['Work Order', 'In Progress', 'Invoice', 'Completed'],
-          description: 'New status for the ServiceM8 job',
+          enum: ['Quote', 'Work Order', 'Unsuccessful', 'Completed'],
+          description: 'New status for the ServiceM8 job. Valid values: Quote, Work Order, Unsuccessful, Completed.',
         },
         notes: {
           type: 'string',
