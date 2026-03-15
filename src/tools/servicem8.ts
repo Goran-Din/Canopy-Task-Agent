@@ -6,11 +6,11 @@ import logger from '../logger';
 
 const sm8Api = axios.create({
   baseURL: config.servicem8.baseUrl,
-  auth: {
-    username: 'goran@north37.co',
-    password: config.servicem8.apiKey,
+  headers: {
+    'X-API-Key': config.servicem8.apiKey,
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
   },
-  headers: { Accept: 'application/json' },
   timeout: 10000,
 });
 
