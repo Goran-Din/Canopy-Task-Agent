@@ -149,12 +149,11 @@ export async function updateJobStatus(input: UpdateJobStatusInput): Promise<{ su
       status: input.new_status,
     });
 
-    if (input.notes) {
-      await sm8Api.post('/jobactivity.json', {
-        job_uuid: jobUuid,
-        note: input.notes,
-      });
-    }
+    const autoNote = `Status updated to "${input.new_status}" by Canopy Task Agent${input.notes ? ': ' + input.notes : '.'}`;
+    await sm8Api.post('/jobactivity.json', {
+      job_uuid: jobUuid,
+      note: autoNote,
+    });
 
     logger.info({ event: 'job_status_updated', job_uuid: jobUuid, new_status: input.new_status });
 
