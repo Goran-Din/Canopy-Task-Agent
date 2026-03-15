@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { buildSystemPrompt } from './systemPrompt';
 import { toolDefinitions } from './tools';
-import { getConversationHistory, saveConversationTurn } from '../db/queries';
+import { getConversationHistory, saveConversationTurn, trimConversationHistory } from '../db/queries';
 import { createTask } from '../tools/vikunja';
 import { getJobStatus, updateJobStatus } from '../tools/servicem8';
 import { updateTaskStatus } from '../tools/vikunja';
@@ -162,6 +162,8 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
     .join('\n');
 
   await saveConversationTurn(user.telegram_id, 'assistant', finalText);
+
+  await trimConversationHistory(user.telegram_id);
 
   return finalText;
 }

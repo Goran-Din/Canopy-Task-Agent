@@ -34,3 +34,26 @@ main().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
 });
+
+import { pool } from './db/pool';
+import logger from './logger';
+import { notifyUser } from './tools/telegram_notify';
+
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received — shutting down gracefully');
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  await pool.end();
+  logger.info('Database pool closed');
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received — shutting down');
+  await pool.end();
+  process.exit(0);
+});
+
+process.on('unhandledRejection', (reason) => {
+  logger.error({ event: 'unhandled_rejection', reason: String(reason) });
+  notifyUser({ recipient: 'goran', message: 'Agent unhandled error: ' + String(reason) }).catch(() => {});
+});

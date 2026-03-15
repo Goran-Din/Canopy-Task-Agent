@@ -99,6 +99,20 @@ export async function getCachedClient(clientName: string): Promise<{ sm8_uuid: s
   return result.rows[0] || null;
 }
 
+export async function trimConversationHistory(telegramId: number): Promise<void> {
+  await pool.query(
+    `DELETE FROM conversations
+     WHERE telegram_id = $1
+     AND id NOT IN (
+       SELECT id FROM conversations
+       WHERE telegram_id = $1
+       ORDER BY created_at DESC
+       LIMIT 20
+     )`,
+    [telegramId]
+  );
+}
+
 export async function getConfigValue(key: string): Promise<string | null> {
   const result = await pool.query(
     'SELECT value FROM config_store WHERE key = $1',
