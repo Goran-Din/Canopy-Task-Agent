@@ -49,10 +49,14 @@ export async function getJobStatus(input: GetJobStatusInput): Promise<{
     }
 
     const cached = await getCachedClient(input.client_name);
-    const clientRes = await sm8Api.get(
-      `/company.json?%24filter=name%20like%20'${encodeURIComponent(input.client_name)}'`
+    const allClientsRes = await sm8Api.get('/company.json', {
+      params: { active: 1 }
+    });
+    const allClients = allClientsRes.data || [];
+    const searchTerm = input.client_name.toLowerCase();
+    const clients = allClients.filter((c: { name?: string }) =>
+      c.name && c.name.toLowerCase().includes(searchTerm)
     );
-    const clients = clientRes.data;
 
     if (!clients || clients.length === 0) {
       return { jobs: [], ambiguous: false, message: `I could not find "${input.client_name}" in ServiceM8. Try a shorter name or check the spelling.` };
