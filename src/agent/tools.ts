@@ -92,13 +92,13 @@ export const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'update_job_status',
-    description: 'Updates the status of a ServiceM8 job through the workflow stages: Work Order → In Progress → Invoice → Completed.',
+    description: 'Updates the status of a ServiceM8 job. IMPORTANT: Call this tool DIRECTLY when the user asks to update a job status — do NOT call get_job_status first. Pass the job number exactly as given by the user (e.g. "26") as the sm8_job_id — the tool will resolve it to the correct UUID automatically.',
     input_schema: {
       type: 'object',
       properties: {
         sm8_job_id: {
           type: 'string',
-          description: 'ServiceM8 job UUID — required for all updates',
+          description: 'ServiceM8 job number as given by the user (e.g. "26") OR the full UUID. Do NOT look up the UUID first — pass the number directly.',
         },
         new_status: {
           type: 'string',
