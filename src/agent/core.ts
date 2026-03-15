@@ -80,6 +80,37 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
 
   await saveConversationTurn(user.telegram_id, 'user', userMessage);
 
+  // Direct job update shortcut — bypass Claude's tendency to call get_job_status first
+  const jobUpdateMatch = userMessage.match(/(?:update|change|move|set)\s+job\s+#?(\d+).*?(?:to\s+)(work order|in progress|invoice|completed)/i);
+  if (jobUpdateMatch) {
+    const jobNumber = jobUpdateMatch[1];
+    const statusMap: Record<string, string> = {
+      'work order': 'Work Order',
+      'in progress': 'In Progress',
+      'invoice': 'Invoice',
+      'completed': 'Completed',
+    };
+    const newStatus = statusMap[jobUpdateMatch[2].toLowerCase()];
+
+    // Extract any note from the message
+    const noteMatch = userMessage.match(/(?:note|comment|add)[:;]?\s*(.+?)(?:\s*$)/i);
+    const notes = noteMatch ? noteMatch[1].trim() : undefined;
+
+    const result = await updateJobStatus({
+      sm8_job_id: jobNumber,
+      new_status: newStatus as 'Work Order' | 'In Progress' | 'Invoice' | 'Completed',
+      notes,
+    });
+
+    const reply = result.success
+      ? `Job #${jobNumber} updated to "${newStatus}".${notes ? ' Note added: ' + notes : ''}`
+      : `Could not update job #${jobNumber}: ${result.message}`;
+
+    await saveConversationTurn(user.telegram_id, 'assistant', reply);
+    await trimConversationHistory(user.telegram_id);
+    return reply;
+  }
+
   const currentDate = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     year: 'numeric',
