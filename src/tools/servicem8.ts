@@ -75,8 +75,14 @@ export async function getJobStatus(input: GetJobStatusInput): Promise<{
       ? clients.find((c: { uuid: string }) => c.uuid === cached.sm8_uuid) || clients[0]
       : clients[0];
 
-    const jobsRes = await sm8Api.get(`/job.json?company_uuid=${client.uuid}&%24orderby=date%20desc&%24top=5`);
-    const jobs = jobsRes.data || [];
+    const jobsRes = await sm8Api.get('/job.json', {
+      params: { company_uuid: client.uuid }
+    });
+    const jobs = (jobsRes.data || [])
+      .sort((a: { date?: string }, b: { date?: string }) =>
+        (b.date || '').localeCompare(a.date || '')
+      )
+      .slice(0, 5);
 
     const results: JobStatus[] = jobs.map((job: {
       company_uuid: string;
@@ -122,19 +128,44 @@ export async function getJobStatus(input: GetJobStatusInput): Promise<{
 }
 
 export async function updateJobStatus(input: UpdateJobStatusInput): Promise<{ success: boolean; message: string }> {
-  await sm8Api.post(`/job/${input.sm8_job_id}.json`, {
-    status: input.new_status,
-  });
+  try {
+    let jobUuid = input.sm8_job_id;
 
-  if (input.notes) {
-    await sm8Api.post('/jobactivity.json', {
-      job_uuid: input.sm8_job_id,
-      note: input.notes,
+    // If the job ID looks like a job number (short, numeric) rather than a UUID, look it up
+    if (!jobUuid.includes('-')) {
+      const allJobsRes = await sm8Api.get('/job.json');
+      const allJobs = allJobsRes.data || [];
+      const job = allJobs.find((j: { generated_job_id?: string; uuid: string }) =>
+        j.generated_job_id === jobUuid || j.generated_job_id === String(jobUuid)
+      );
+      if (!job) {
+        return { success: false, message: `Could not find job #${jobUuid} in ServiceM8.` };
+      }
+      jobUuid = job.uuid;
+      logger.info({ event: 'job_uuid_resolved', job_number: input.sm8_job_id, uuid: jobUuid });
+    }
+
+    await sm8Api.post(`/job/${jobUuid}.json`, {
+      status: input.new_status,
     });
-  }
 
-  return {
-    success: true,
-    message: `Job ${input.sm8_job_id} updated to "${input.new_status}".${input.notes ? ' Note added.' : ''}`,
-  };
+    if (input.notes) {
+      await sm8Api.post('/jobactivity.json', {
+        job_uuid: jobUuid,
+        note: input.notes,
+      });
+    }
+
+    logger.info({ event: 'job_status_updated', job_uuid: jobUuid, new_status: input.new_status });
+
+    return {
+      success: true,
+      message: `Job #${input.sm8_job_id} updated to "${input.new_status}".${input.notes ? ' Note added.' : ''}`,
+    };
+
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'update_job_status_error', error: error.message });
+    return { success: false, message: `Could not update job status: ${error.message}` };
+  }
 }
