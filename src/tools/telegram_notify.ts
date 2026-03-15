@@ -1,5 +1,6 @@
 import { NotifyUserInput } from '../types';
 import { config } from '../config';
+import logger from '../logger';
 
 let botInstance: { sendMessage: (chatId: number | string, text: string, opts?: object) => Promise<void> } | null = null;
 
@@ -7,7 +8,7 @@ export function registerBot(bot: { sendMessage: (chatId: number | string, text: 
   botInstance = bot;
 }
 
-function resolveTelegramId(recipient: string): number | string {
+function resolveTelegramId(recipient: string): number | string | null {
   const lower = recipient.toLowerCase();
   if (lower === 'group') return config.telegram.groupId;
 
@@ -22,7 +23,7 @@ function resolveTelegramId(recipient: string): number | string {
 
   const id = ids[lower];
   if (!id || id === 'PENDING') {
-    throw new Error(`Telegram ID for "${recipient}" is not configured yet.`);
+    return null;
   }
   return id as number | string;
 }
@@ -33,6 +34,12 @@ export async function notifyUser(input: NotifyUserInput): Promise<{ success: boo
   }
 
   const chatId = resolveTelegramId(input.recipient);
+
+  if (chatId === null) {
+    const msg = `Unknown recipient "${input.recipient}". Valid names: erick, marcin, mark, hristina, gordana, goran, group`;
+    logger.warn({ event: 'unknown_recipient', recipient: input.recipient });
+    return { success: false, message: msg } as { success: boolean; message: string };
+  }
 
   const prefix: Record<string, string> = {
     task_assigned: '🔔',
@@ -45,10 +52,18 @@ export async function notifyUser(input: NotifyUserInput): Promise<{ success: boo
   const emoji = input.notification_type ? prefix[input.notification_type] || '' : '';
   const text = emoji ? `${emoji} ${input.message}` : input.message;
 
-  await botInstance.sendMessage(chatId, text);
+  try {
+    await botInstance.sendMessage(chatId, text);
 
-  return {
-    success: true,
-    message: `Notification sent to ${input.recipient}.`,
-  };
+    logger.info({ event: 'notification_sent', recipient: input.recipient, type: input.notification_type });
+
+    return {
+      success: true,
+      message: `Notification sent to ${input.recipient}.`,
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'notification_failed', recipient: input.recipient, error: error.message });
+    return { success: false, message: `Could not send notification to ${input.recipient}: ${error.message}` };
+  }
 }

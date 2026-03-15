@@ -2,6 +2,7 @@ import axios from 'axios';
 import { config } from '../config';
 import { saveTask, updateTask } from '../db/queries';
 import { CreateTaskInput, UpdateTaskInput } from '../types';
+import logger from '../logger';
 
 const vikunjaApi = axios.create({
   baseURL: `${config.vikunja.baseUrl}/api/v1`,
@@ -82,6 +83,8 @@ export async function createTask(
     vikunja_label_id: labelId,
   });
 
+  logger.info({ event: 'task_created', task_id: task.id, title: task.title, assigned_to: input.assigned_to });
+
   return {
     task_id: task.id,
     title: task.title,
@@ -101,6 +104,8 @@ export async function updateTaskStatus(input: UpdateTaskInput): Promise<{ succes
     input.status,
     input.status === 'done' ? new Date() : undefined
   );
+
+  logger.info({ event: 'task_updated', task_id: input.task_id, status: input.status });
 
   return {
     success: true,
