@@ -58,6 +58,14 @@ export interface NotifyUserInput {
   related_task_id?: number;
 }
 
+export interface CreateJobInput {
+  client_name: string;
+  job_description: string;
+  job_date?: string;
+  job_type?: 'lawn_care' | 'hardscape' | 'snow_removal' | 'irrigation' | 'cleanup' | 'other';
+  pricing_notes?: string;
+}
+
 export interface XeroQueryInput {
   query_type: 'invoice_status' | 'outstanding' | 'client_balance' | 'overdue';
   client_name?: string;

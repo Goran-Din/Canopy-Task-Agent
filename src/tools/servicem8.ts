@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { config } from '../config';
 import { cacheClient, getCachedClient } from '../db/queries';
-import { GetJobStatusInput, UpdateJobStatusInput, JobStatus } from '../types';
+import { GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, JobStatus } from '../types';
 import logger from '../logger';
 
 const sm8Api = axios.create({
@@ -145,14 +145,30 @@ export async function updateJobStatus(input: UpdateJobStatusInput): Promise<{ su
       logger.info({ event: 'job_uuid_resolved', job_number: input.sm8_job_id, uuid: jobUuid });
     }
 
+    logger.info({ event: 'update_job_status_call', job_uuid: jobUuid, new_status: input.new_status });
+
     await sm8Api.post(`/job/${jobUuid}.json`, {
       status: input.new_status,
     });
 
+    // Fetch a staff UUID to attach the activity note
+    let staffUuid: string | undefined;
+    try {
+      const staffRes = await sm8Api.get('/staff.json');
+      const staffList = staffRes.data || [];
+      if (staffList.length > 0) {
+        staffUuid = staffList[0].uuid;
+      }
+    } catch {
+      logger.warn({ event: 'staff_lookup_failed' });
+    }
+
     const autoNote = `Status updated to "${input.new_status}" by Canopy Task Agent${input.notes ? ': ' + input.notes : '.'}`;
     await sm8Api.post('/jobactivity.json', {
       job_uuid: jobUuid,
+      staff_uuid: staffUuid,
       note: autoNote,
+      activity_was_scheduled: 0,
     });
 
     logger.info({ event: 'job_status_updated', job_uuid: jobUuid, new_status: input.new_status });
@@ -166,5 +182,70 @@ export async function updateJobStatus(input: UpdateJobStatusInput): Promise<{ su
     const error = err instanceof Error ? err : new Error(String(err));
     logger.error({ event: 'update_job_status_error', error: error.message });
     return { success: false, message: `Could not update job status: ${error.message}` };
+  }
+}
+
+export async function createJob(input: CreateJobInput): Promise<{ success: boolean; job_uuid: string; job_number: string; message: string }> {
+  try {
+    // Find client by name
+    const allClientsRes = await sm8Api.get('/company.json', { params: { active: 1 } });
+    const allClients = allClientsRes.data || [];
+    const searchTerm = input.client_name.toLowerCase();
+    const matches = allClients.filter((c: { name?: string }) =>
+      c.name && c.name.toLowerCase().includes(searchTerm)
+    );
+
+    if (matches.length === 0) {
+      return { success: false, job_uuid: '', job_number: '', message: `No client found matching "${input.client_name}". Check the spelling or try a shorter name.` };
+    }
+
+    if (matches.length > 1) {
+      const list = matches.slice(0, 5).map((c: { name: string }, i: number) => `${i + 1}. ${c.name}`).join('\n');
+      return { success: false, job_uuid: '', job_number: '', message: `Found ${matches.length} clients matching "${input.client_name}":\n${list}\nWhich one did you mean?` };
+    }
+
+    const client = matches[0];
+    const jobDate = input.job_date || new Date().toISOString().split('T')[0];
+
+    const description = [
+      input.job_description,
+      input.pricing_notes ? `Pricing notes: ${input.pricing_notes}` : 'Pricing: to be added manually in ServiceM8',
+      `Job type: ${input.job_type || 'other'}`,
+      `Created by Canopy Task Agent`,
+    ].join('\n');
+
+    const response = await sm8Api.post('/job.json', {
+      company_uuid: client.uuid,
+      status: 'Quote',
+      job_description: description,
+      date: jobDate,
+    });
+
+    if (response.data.errorCode === 0) {
+      // Fetch the newly created job to get its number
+      const jobsRes = await sm8Api.get('/job.json', { params: { company_uuid: client.uuid } });
+      const jobs = (jobsRes.data || []).sort((a: { date?: string }, b: { date?: string }) =>
+        (b.date || '').localeCompare(a.date || '')
+      );
+      const newJob = jobs[0];
+      const jobNumber = newJob?.generated_job_id || 'unknown';
+      const jobUuid = newJob?.uuid || '';
+
+      logger.info({ event: 'job_created', client: client.name, job_number: jobNumber, job_uuid: jobUuid });
+
+      return {
+        success: true,
+        job_uuid: jobUuid,
+        job_number: jobNumber,
+        message: `Quote created for ${client.name} — Job #${jobNumber}. Date: ${jobDate}. Description: ${input.job_description}.`,
+      };
+    }
+
+    return { success: false, job_uuid: '', job_number: '', message: `ServiceM8 returned an error creating the job.` };
+
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'create_job_error', error: error.message });
+    return { success: false, job_uuid: '', job_number: '', message: `Could not create job: ${error.message}` };
   }
 }

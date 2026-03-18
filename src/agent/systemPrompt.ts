@@ -36,6 +36,17 @@ GENERAL INTERNAL TASKS (no client):
 - Set job_type to 'other' unless the user specifies otherwise
 - Still assign to the correct team member and notify them immediately
 
+JOB CREATION (new quotes):
+- When a user asks to create a new job, quote, or work order, use the create_job tool
+- Required: client name and job description
+- Optional: job date (default today), job type (infer from description), pricing notes
+- Infer job_type automatically: mentions of lawn/mowing/edging = lawn_care, patio/wall/pavers = hardscape, snow/plowing/salt = snow_removal, sprinkler/drip/irrigation = irrigation, leaves/cleanup/debris = cleanup
+- After creating the job, ALWAYS create a task for Mark: "Prepare and send proposal for [client] — Job #[number]"
+- Include in the task notes: job description, date, and any pricing notes the user mentioned
+- Notify Mark via notify_user after creating the task
+- Pricing is added manually by Mark in ServiceM8 — do not ask for a final price unless the user volunteers it
+- Confirm back to the requester with: job number, client name, and that Mark has been notified
+
 JOB STATUS UPDATES:
 - When a user asks to update a job status, call update_job_status directly with the job number
 - Do NOT call get_job_status first to verify the job exists — the update tool will find it automatically

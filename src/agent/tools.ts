@@ -114,6 +114,37 @@ export const toolDefinitions: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'create_job',
+    description: 'Creates a new Quote job in ServiceM8 for a client. Use when a team member asks to create a new job, quote, or work order for a client. Always confirm client name, job description, and date before creating. After creating the job, always create a Vikunja task for Mark to prepare and send the proposal.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name — will be matched against ServiceM8 records',
+        },
+        job_description: {
+          type: 'string',
+          description: 'Short description of the work to be done — plain English',
+        },
+        job_date: {
+          type: 'string',
+          description: 'ISO 8601 date e.g. 2026-04-15 — defaults to today if not provided',
+        },
+        job_type: {
+          type: 'string',
+          enum: ['lawn_care', 'hardscape', 'snow_removal', 'irrigation', 'cleanup', 'other'],
+          description: 'Job type — infer from the job description if not explicitly stated',
+        },
+        pricing_notes: {
+          type: 'string',
+          description: 'Any pricing information mentioned by the user — will be added to job notes for Mark to reference',
+        },
+      },
+      required: ['client_name', 'job_description'],
+    },
+  },
+  {
     name: 'notify_user',
     description: 'Sends a Telegram direct message to a registered team member or posts to the Sunset Ops group chat. Use this after every task creation, task completion, and invoice event.',
     input_schema: {

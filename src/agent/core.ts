@@ -4,11 +4,11 @@ import { buildSystemPrompt } from './systemPrompt';
 import { toolDefinitions } from './tools';
 import { getConversationHistory, saveConversationTurn, trimConversationHistory } from '../db/queries';
 import { createTask } from '../tools/vikunja';
-import { getJobStatus, updateJobStatus } from '../tools/servicem8';
+import { getJobStatus, updateJobStatus, createJob } from '../tools/servicem8';
 import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
-import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, NotifyUserInput, XeroQueryInput } from '../types';
+import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput } from '../types';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -50,6 +50,12 @@ async function executeToolCall(
       case 'update_job_status': {
         const input = toolInput as unknown as UpdateJobStatusInput;
         const result = await updateJobStatus(input);
+        return JSON.stringify(result);
+      }
+
+      case 'create_job': {
+        const input = toolInput as unknown as CreateJobInput;
+        const result = await createJob(input);
         return JSON.stringify(result);
       }
 
