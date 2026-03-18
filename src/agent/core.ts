@@ -22,6 +22,15 @@ async function executeToolCall(
       case 'create_task': {
         const input = toolInput as unknown as CreateTaskInput;
         const assigneeName = (input.assigned_to || '').toLowerCase();
+        const nameMap: Record<string, string> = {
+          'goran': 'goran', 'dino': 'goran', 'brother dino': 'goran',
+          'erick': 'erick', 'eric': 'erick', 'erik': 'erick',
+          'marcin': 'marcin', 'marciv': 'marcin', 'marvin': 'marcin',
+          'mark': 'mark', 'marjan': 'mark', 'marck': 'mark', 'marc': 'mark',
+          'hristina': 'hristina', 'christina': 'hristina', 'kristina': 'hristina',
+          'gordana': 'gordana', 'gogi': 'gordana', 'boogy': 'gordana', 'bogi': 'gordana',
+        };
+        const canonicalName = nameMap[assigneeName] || assigneeName;
         const assigneeIdMap: Record<string, number> = {
           goran: 1996235953,
           erick: 8049966920,
@@ -30,7 +39,7 @@ async function executeToolCall(
           hristina: 594423613,
           gordana: 6712338568,
         };
-        const assigneeTelegramId = assigneeIdMap[assigneeName] || user.telegram_id;
+        const assigneeTelegramId = assigneeIdMap[canonicalName] || user.telegram_id;
         const result = await createTask(input, user.telegram_id, assigneeTelegramId);
         return JSON.stringify(result);
       }

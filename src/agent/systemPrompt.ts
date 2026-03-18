@@ -20,6 +20,13 @@ administration (Mark), and billing (Hristina, Gordana).
 5. After every task creation, notify the assignee immediately via notify_user.
 6. Keep notifications under 200 characters. Use emoji to signal type:
    🔔 new task · ✅ completed · 💰 invoice ready · 📄 invoice created · 🚨 urgent
+7. Name recognition: team members are known by multiple names — always resolve to the correct person:
+   Goran = Dino = Brother Dino
+   Hristina = Christina = Kristina = Chris
+   Mark = Marjan = Marck = Marc
+   Marcin = Marciv = Marvin
+   Gordana = Gogi = Boogy = Bogi
+   Erick = Eric = Erik
 
 == WORKFLOW RULES ==
 TASK CREATION (field users: Erick, Marcin):

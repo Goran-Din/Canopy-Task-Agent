@@ -26,7 +26,20 @@ function getLabelId(jobType: string): number {
 }
 
 function resolveAssigneeVikunjaId(name: string): number {
-  const map: Record<string, number> = {
+  const lower = name.toLowerCase().trim();
+
+  const nameMap: Record<string, string> = {
+    'goran': 'goran', 'dino': 'goran', 'brother dino': 'goran', 'bro': 'goran',
+    'erick': 'erick', 'eric': 'erick', 'erik': 'erick',
+    'marcin': 'marcin', 'marciv': 'marcin', 'marvin': 'marcin',
+    'mark': 'mark', 'marjan': 'mark', 'marck': 'mark', 'marc': 'mark',
+    'hristina': 'hristina', 'christina': 'hristina', 'kristina': 'hristina', 'chris': 'hristina',
+    'gordana': 'gordana', 'gogi': 'gordana', 'boogy': 'gordana', 'bogi': 'gordana',
+  };
+
+  const canonical = nameMap[lower] || lower;
+
+  const vikunjaIds: Record<string, number> = {
     goran: 1,
     erick: 7,
     marcin: 8,
@@ -34,7 +47,8 @@ function resolveAssigneeVikunjaId(name: string): number {
     hristina: 10,
     gordana: 11,
   };
-  return map[name.toLowerCase()] ?? 9;
+
+  return vikunjaIds[canonical] ?? 9;
 }
 
 export async function createTask(

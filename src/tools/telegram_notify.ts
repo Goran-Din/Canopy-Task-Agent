@@ -9,8 +9,26 @@ export function registerBot(bot: { sendMessage: (chatId: number | string, text: 
 }
 
 function resolveTelegramId(recipient: string): number | string | null {
-  const lower = recipient.toLowerCase();
+  const lower = recipient.toLowerCase().trim();
   if (lower === 'group') return config.telegram.groupId;
+
+  const nameMap: Record<string, string> = {
+    // Goran
+    'goran': 'goran', 'dino': 'goran', 'brother dino': 'goran', 'bro': 'goran',
+    // Erick
+    'erick': 'erick', 'eric': 'erick', 'erik': 'erick',
+    // Marcin
+    'marcin': 'marcin', 'marciv': 'marcin', 'marvin': 'marcin',
+    // Mark
+    'mark': 'mark', 'marjan': 'mark', 'marck': 'mark', 'marc': 'mark',
+    // Hristina
+    'hristina': 'hristina', 'christina': 'hristina', 'kristina': 'hristina', 'chris': 'hristina',
+    // Gordana
+    'gordana': 'gordana', 'gogi': 'gordana', 'boogy': 'gordana', 'bogi': 'gordana',
+  };
+
+  const canonical = nameMap[lower];
+  if (!canonical) return null;
 
   const ids: Record<string, number | string> = {
     goran: config.telegram.users.goran,
@@ -21,10 +39,8 @@ function resolveTelegramId(recipient: string): number | string | null {
     gordana: config.telegram.users.gordana,
   };
 
-  const id = ids[lower];
-  if (!id || id === 'PENDING') {
-    return null;
-  }
+  const id = ids[canonical];
+  if (!id || id === 'PENDING') return null;
   return id as number | string;
 }
 
