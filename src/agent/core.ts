@@ -218,3 +218,102 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
 
   return finalText;
 }
+
+export async function runAgentWithPhoto(user: User, base64Image: string, textContext: string): Promise<string> {
+  const history = await getConversationHistory(user.telegram_id);
+
+  const combinedMessage = `[Photo received]${textContext !== 'No additional message provided.' ? '\n\nUser also sent this message: ' + textContext : ''}`;
+
+  await saveConversationTurn(user.telegram_id, 'user', combinedMessage);
+
+  const systemPrompt = buildSystemPrompt(
+    user.name,
+    user.role,
+    new Date().toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      timeZone: 'America/Chicago',
+    }) + ' · ' + new Date().toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short',
+    })
+  );
+
+  const photoPrompt = `The team member sent you a photo. Extract all useful information from it.
+
+Look for:
+- Client name and contact details (phone, email, address)
+- Job description or service requested
+- Any pricing or quote information
+- Dates or scheduling information
+- Any other relevant operational details
+
+After extracting the information, determine what action is needed:
+- If enough info exists to create a task or job — ask the user to confirm before acting
+- If key information is missing (client name, job description, assigned employee, date, duration) — ask for the missing pieces one at a time
+- Always confirm: client name, what work needs to be done, who is assigned, when, and estimated duration
+
+${textContext !== 'No additional message provided.' ? 'The user also sent this message along with the photo: "' + textContext + '"' : ''}`;
+
+  const messages: Anthropic.MessageParam[] = [
+    ...history.map(turn => ({ role: turn.role as 'user' | 'assistant', content: turn.content })),
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/jpeg',
+            data: base64Image,
+          },
+        },
+        {
+          type: 'text',
+          text: photoPrompt,
+        },
+      ],
+    },
+  ];
+
+  let response = await anthropic.messages.create({
+    model: config.anthropic.model,
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages,
+    tools: toolDefinitions,
+  });
+
+  const toolResultMessages: Anthropic.MessageParam[] = [];
+
+  while (response.stop_reason === 'tool_use') {
+    const assistantMessage: Anthropic.MessageParam = { role: 'assistant', content: response.content };
+    toolResultMessages.push(assistantMessage);
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of response.content) {
+      if (block.type === 'tool_use') {
+        const result = await executeToolCall(block.name, block.input as Record<string, unknown>, user);
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result });
+      }
+    }
+
+    toolResultMessages.push({ role: 'user', content: toolResults });
+
+    response = await anthropic.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [...messages, ...toolResultMessages],
+      tools: toolDefinitions,
+    });
+  }
+
+  const finalText = response.content
+    .filter(block => block.type === 'text')
+    .map(block => (block as Anthropic.TextBlock).text)
+    .join('\n');
+
+  await saveConversationTurn(user.telegram_id, 'assistant', finalText);
+  await trimConversationHistory(user.telegram_id);
+
+  return finalText;
+}

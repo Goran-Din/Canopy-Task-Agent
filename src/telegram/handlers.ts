@@ -1,11 +1,25 @@
 import TelegramBot from 'node-telegram-bot-api';
+import axios from 'axios';
 import { bot } from './bot';
 import { getUserByTelegramId } from '../db/queries';
-import { runAgent } from '../agent/core';
+import { runAgent, runAgentWithPhoto } from '../agent/core';
 import { notifyUser } from '../tools/telegram_notify';
+import { config } from '../config';
 import logger from '../logger';
 import { isRateLimited } from '../middleware/rateLimiter';
 import { isDuplicate } from '../middleware/deduplication';
+
+const pendingPhotos: Map<number, { fileId: string; caption?: string; timestamp: number }> = new Map();
+const PHOTO_WAIT_MS = 8000;
+
+async function downloadTelegramPhoto(fileId: string): Promise<string> {
+  const token = config.telegram.botToken;
+  const fileRes = await axios.get(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
+  const filePath = fileRes.data.result.file_path;
+  const fileUrl = `https://api.telegram.org/file/bot${token}/${filePath}`;
+  const imgRes = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+  return Buffer.from(imgRes.data).toString('base64');
+}
 
 const GORAN_TELEGRAM_ID = 1996235953;
 
@@ -62,6 +76,52 @@ async function handleAdminCommand(text: string, chatId: number): Promise<void> {
 }
 
 export function registerHandlers(): void {
+  bot.on('photo', async (msg: TelegramBot.Message) => {
+    const chatId = msg.chat.id;
+    const telegramId = msg.from?.id;
+    if (!telegramId) return;
+
+    const user = await getUserByTelegramId(telegramId);
+    if (!user) {
+      await bot.sendMessage(chatId, 'You are not registered. Please contact Goran to get access.');
+      return;
+    }
+
+    // Get the highest resolution photo
+    const photos = msg.photo || [];
+    const bestPhoto = photos[photos.length - 1];
+    const caption = msg.caption || undefined;
+
+    // Store photo and wait for follow-up text
+    pendingPhotos.set(telegramId, {
+      fileId: bestPhoto.file_id,
+      caption,
+      timestamp: Date.now(),
+    });
+
+    await bot.sendChatAction(chatId, 'typing');
+
+    // Wait 8 seconds for a follow-up text message
+    setTimeout(async () => {
+      const pending = pendingPhotos.get(telegramId);
+      if (!pending) return; // already processed by text handler
+
+      // No follow-up text came — process photo alone
+      pendingPhotos.delete(telegramId);
+
+      try {
+        const base64Image = await downloadTelegramPhoto(pending.fileId);
+        const textContext = pending.caption || 'No additional message provided.';
+        const reply = await runAgentWithPhoto(user, base64Image, textContext);
+        await bot.sendMessage(chatId, reply, { parse_mode: 'HTML' });
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error({ event: 'photo_handler_error', error: error.message });
+        await bot.sendMessage(chatId, 'Could not process the photo. Please try again or type your request.');
+      }
+    }, PHOTO_WAIT_MS);
+  });
+
   bot.on('message', async (msg: TelegramBot.Message) => {
     if (isDuplicate(msg.message_id)) return;
 
@@ -71,13 +131,35 @@ export function registerHandlers(): void {
 
     if (!telegramId) return;
 
+    // Ignore photo messages — handled by the photo handler above
+    if (msg.photo) return;
+
     if (!text) {
-      await bot.sendMessage(chatId, 'Please send text messages. Voice and photos are not supported yet.');
+      await bot.sendMessage(chatId, 'Please send text messages. Voice is not supported yet. Photos are supported!');
       return;
     }
 
     if (isRateLimited(telegramId)) {
       return;
+    }
+
+    // Check if there is a pending photo waiting for this text message
+    const pending = pendingPhotos.get(telegramId);
+    if (pending && Date.now() - pending.timestamp < PHOTO_WAIT_MS + 2000) {
+      pendingPhotos.delete(telegramId);
+      try {
+        await bot.sendChatAction(chatId, 'typing');
+        const base64Image = await downloadTelegramPhoto(pending.fileId);
+        const user = await getUserByTelegramId(telegramId);
+        if (user) {
+          const reply = await runAgentWithPhoto(user, base64Image, text);
+          await bot.sendMessage(chatId, reply, { parse_mode: 'HTML' });
+          return;
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error({ event: 'photo_text_handler_error', error: error.message });
+      }
     }
 
     if (text.startsWith('/')) {
