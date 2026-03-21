@@ -13,6 +13,8 @@ import invoiceRoutes from './dashboard/invoiceRoutes';
 import commentRoutes from './dashboard/commentRoutes';
 import landscapeRoutes from './dashboard/landscapeRoutes';
 import dashboardRouter from './api/dashboardRouter';
+import knowledgeRouter from './api/knowledgeRouter';
+import { adminLoginRoute } from './dashboard/adminAuth';
 
 async function main(): Promise<void> {
   console.log(`Starting Canopy Task Agent — ${config.environment}`);
@@ -55,6 +57,20 @@ async function main(): Promise<void> {
   });
   app.get('/hardscape/*', (_req, res) => {
     res.sendFile(path.join(distDir, 'hardscape.html'));
+  });
+
+  // Admin dashboard — serves admin.html
+  app.use('/admin/assets', express.static(path.join(distDir, 'assets')));
+  app.post('/admin/login', adminLoginRoute);
+  app.use('/', knowledgeRouter);
+  app.get('/admin', (_req, res) => {
+    res.sendFile(path.join(distDir, 'admin.html'));
+  });
+  app.get('/admin/', (_req, res) => {
+    res.sendFile(path.join(distDir, 'admin.html'));
+  });
+  app.get('/admin/*', (_req, res) => {
+    res.sendFile(path.join(distDir, 'admin.html'));
   });
 
   // Landscape dashboard — serves index.html

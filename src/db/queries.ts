@@ -121,6 +121,19 @@ export async function getConfigValue(key: string): Promise<string | null> {
   return result.rows[0]?.value || null;
 }
 
+export async function searchKnowledgeBase(query: string): Promise<{ id: number; title: string; content: string; category: string; tags: string[] }[]> {
+  const result = await pool.query(
+    `SELECT id, title, content, category, tags,
+            ts_rank(to_tsvector('english', title || ' ' || content), plainto_tsquery('english', $1)) AS rank
+     FROM knowledge_base
+     WHERE to_tsvector('english', title || ' ' || content) @@ plainto_tsquery('english', $1)
+     ORDER BY rank DESC
+     LIMIT 5`,
+    [query]
+  );
+  return result.rows;
+}
+
 export async function setConfigValue(key: string, value: string, expiresAt?: Date): Promise<void> {
   await pool.query(
     `INSERT INTO config_store (key, value, expires_at, updated_at)

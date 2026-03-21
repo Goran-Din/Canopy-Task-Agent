@@ -67,6 +67,7 @@ export const config = {
 
   dashboard: {
     password: process.env.DASHBOARD_PASSWORD || '',
+    adminPassword: process.env.ADMIN_PASSWORD || 'Goran2025!',
   },
 
   alerts: {

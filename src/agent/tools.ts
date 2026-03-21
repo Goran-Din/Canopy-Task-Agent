@@ -331,4 +331,18 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: [],
     },
   },
+  {
+    name: 'search_knowledge_base',
+    description: 'Searches the company knowledge base for SOPs, policies, and procedures. Use when a team member asks about company policies, standard procedures, how to handle specific situations, or any operational question that might be documented.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query — plain English description of what to look up',
+        },
+      },
+      required: ['query'],
+    },
+  },
 ];

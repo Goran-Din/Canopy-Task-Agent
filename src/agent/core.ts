@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { buildSystemPrompt } from './systemPrompt';
 import { toolDefinitions } from './tools';
-import { getConversationHistory, saveConversationTurn, trimConversationHistory } from '../db/queries';
+import { getConversationHistory, saveConversationTurn, trimConversationHistory, searchKnowledgeBase } from '../db/queries';
 import { createTask } from '../tools/vikunja';
 import { getJobStatus, updateJobStatus, createJob } from '../tools/servicem8';
 import { updateTaskStatus } from '../tools/vikunja';
@@ -116,6 +116,15 @@ async function executeToolCall(
 
       case 'get_pipeline_summary': {
         return await getPipelineSummaryText();
+      }
+
+      case 'search_knowledge_base': {
+        const query = toolInput.query as string;
+        const results = await searchKnowledgeBase(query);
+        if (results.length === 0) {
+          return JSON.stringify({ message: 'No matching documents found in the knowledge base.' });
+        }
+        return JSON.stringify({ documents: results });
       }
 
       default:

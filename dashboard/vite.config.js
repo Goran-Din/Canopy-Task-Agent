@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         landscape: resolve(__dirname, 'index.html'),
         hardscape: resolve(__dirname, 'hardscape.html'),
+        admin: resolve(__dirname, 'admin.html'),
       },
     },
   },
@@ -19,6 +20,7 @@ export default defineConfig({
       '/landscape': 'http://localhost:3100',
       '/api': 'http://localhost:3100',
       '/dashboard': 'http://localhost:3100',
+      '/admin': 'http://localhost:3100',
     },
   },
 })
