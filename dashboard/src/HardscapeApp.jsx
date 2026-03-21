@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import PipelineTab from './components/PipelineTab';
+import CrewCalendar from './components/CrewCalendar';
 import ArchiveTab from './components/ArchiveTab';
 
 const TABS = [
   { key: 'pipeline', label: 'Pipeline' },
+  { key: 'calendar', label: 'Crew Calendar' },
   { key: 'archive', label: 'Archive' },
 ];
 
@@ -146,6 +148,7 @@ export default function HardscapeApp() {
         {tab === 'pipeline' && (
           <PipelineTab prospects={prospects} loading={loading} />
         )}
+        {tab === 'calendar' && <CrewCalendar />}
         {tab === 'archive' && <ArchiveTab />}
       </div>
     </div>
