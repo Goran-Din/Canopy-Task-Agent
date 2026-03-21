@@ -142,3 +142,19 @@ export async function delayCrewSchedule(
   const prospectIds = result.rows.map((r: { prospect_id: number }) => r.prospect_id);
   return { count: result.rowCount ?? 0, prospectIds };
 }
+
+export async function getPipelineSummary(): Promise<Record<string, any[]>> {
+  const result = await pool.query(`
+    SELECT id, sm8_client_name, stage, crew_assignment,
+           scheduled_start, assigned_to, updated_at
+    FROM hardscape_prospects
+    WHERE stage NOT IN ('completed', 'closed_lost')
+    ORDER BY stage, updated_at DESC
+  `);
+  const grouped: Record<string, any[]> = {};
+  for (const row of result.rows) {
+    if (!grouped[row.stage]) grouped[row.stage] = [];
+    grouped[row.stage].push(row);
+  }
+  return grouped;
+}

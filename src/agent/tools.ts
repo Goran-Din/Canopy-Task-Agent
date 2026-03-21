@@ -322,4 +322,13 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: ['crew', 'days'],
     },
   },
+  {
+    name: 'get_pipeline_summary',
+    description: 'Returns a summary of all active hardscape prospects grouped by pipeline stage. Use when someone asks to see the pipeline, all prospects, or pipeline status.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
 ];

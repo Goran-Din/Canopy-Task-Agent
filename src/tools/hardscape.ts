@@ -18,6 +18,7 @@ import {
   getNextAvailableDate,
   createCrewScheduleEntry,
   delayCrewSchedule,
+  getPipelineSummary,
 } from '../db/hardscapeQueries';
 import logger from '../logger';
 
@@ -215,6 +216,37 @@ export async function delayCrewJobs(
     logger.error({ event: 'delay_crew_error', error: msg });
     return `❌ Failed to delay jobs: ${msg}`;
   }
+}
+
+export async function getPipelineSummaryText(): Promise<string> {
+  const grouped = await getPipelineSummary();
+  const PIPELINE_LABELS: Record<string, string> = {
+    initial_contact: 'Initial Contact',
+    site_visit: 'Site Visit',
+    quote_sent: 'Quote Sent',
+    revision_requested: 'Revision Requested',
+    visual_rendering: 'Visual Rendering',
+    final_quote: 'Final Quote',
+    deposit_invoice: 'Deposit Invoice',
+    scheduled: 'Scheduled',
+    in_progress: 'In Progress',
+  };
+  const STAGE_ORDER = Object.keys(PIPELINE_LABELS);
+  const lines: string[] = ['🏗️ Hardscape Pipeline\n'];
+  let total = 0;
+  for (const stage of STAGE_ORDER) {
+    const prospects = grouped[stage];
+    if (!prospects || prospects.length === 0) continue;
+    lines.push(`*${PIPELINE_LABELS[stage]}* (${prospects.length})`);
+    for (const p of prospects) {
+      const crew = p.crew_assignment ? ` — ${p.crew_assignment === 'hp1' ? 'HP#1' : 'HP#2'}` : '';
+      lines.push(`  • ${p.sm8_client_name}${crew}`);
+      total++;
+    }
+  }
+  if (total === 0) return '🏗️ Hardscape Pipeline\n\nNo active prospects.';
+  lines.push(`\nTotal: ${total} active prospect${total !== 1 ? 's' : ''}`);
+  return lines.join('\n');
 }
 
 function addDaysToDate(dateStr: string, days: number): string {

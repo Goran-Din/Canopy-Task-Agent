@@ -9,7 +9,7 @@ import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
 import { getScheduleCache } from '../workers/landscapeSync';
-import { createProspect, updateProspectStage, assignCrew, delayCrewJobs } from '../tools/hardscape';
+import { createProspect, updateProspectStage, assignCrew, delayCrewJobs, getPipelineSummaryText } from '../tools/hardscape';
 import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId, CreateProspectInput, UpdateProspectStageInput, AssignCrewInput, DelayCrewJobsInput } from '../types';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
@@ -112,6 +112,10 @@ async function executeToolCall(
       case 'delay_crew_jobs': {
         const input = toolInput as unknown as DelayCrewJobsInput;
         return await delayCrewJobs(input, user.telegram_id);
+      }
+
+      case 'get_pipeline_summary': {
+        return await getPipelineSummaryText();
       }
 
       default:

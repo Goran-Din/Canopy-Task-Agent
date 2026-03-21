@@ -14,5 +14,6 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 COPY src/db/schema.sql ./dist/db/schema.sql
+COPY dashboard/dist ./dashboard/dist
 EXPOSE 3100
 CMD ["node", "dist/index.js"]
