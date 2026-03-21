@@ -142,6 +142,95 @@ const STATUS_COLORS = {
 };
 
 // ---------------------------------------------------------------------------
+// JOB DETAIL MODAL
+// ---------------------------------------------------------------------------
+
+function JobDetailModal({ job, crewId, onClose }) {
+  const meta = CREW_META[crewId] || { label: crewId, color: '#6B7280' };
+  const startTime = formatTime(job.scheduled_start);
+  const endTime = formatTime(job.scheduled_end);
+  const timeRange = startTime && endTime ? `${startTime} – ${endTime}` : startTime || 'Not set';
+  const durationText = job.estimated_hours > 0 ? `${job.estimated_hours} hour${job.estimated_hours !== 1 ? 's' : ''}` : '';
+  const sm8Url = `https://go.servicem8.com/#job,${job.job_uuid}`;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40" />
+      <div
+        className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 z-10 overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 pt-5 pb-3">
+          <div className="flex-1 min-w-0 mr-3">
+            <h3 className="text-lg font-bold text-gray-900 leading-snug">{job.client_name}</h3>
+            <div className="text-sm text-gray-500 mt-0.5">Job #{job.job_number}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 text-lg font-bold flex-shrink-0"
+          >
+            &#10005;
+          </button>
+        </div>
+
+        {/* Details */}
+        <div className="px-5 pb-4 space-y-2.5">
+          {/* Crew */}
+          <div className="flex items-center">
+            <div className="w-3 h-3 rounded-full mr-2 flex-shrink-0" style={{ backgroundColor: meta.color }} />
+            <span className="text-sm font-medium" style={{ color: meta.color }}>{meta.label}</span>
+          </div>
+
+          {/* Date */}
+          <div className="flex items-center text-sm text-gray-700">
+            <span className="text-gray-400 mr-2">&#128197;</span>
+            {formatDateFull(job.date)}
+          </div>
+
+          {/* Time */}
+          <div className="flex items-center text-sm text-gray-700">
+            <span className="text-gray-400 mr-2">&#128337;</span>
+            {timeRange}
+            {durationText && <span className="text-gray-400 mx-1">&middot;</span>}
+            {durationText}
+          </div>
+
+          {/* Employees */}
+          {job.employee_count > 0 && (
+            <div className="flex items-center text-sm text-gray-700">
+              <span className="text-gray-400 mr-2">&#128101;</span>
+              {job.employee_count} employee{job.employee_count !== 1 ? 's' : ''}
+            </div>
+          )}
+
+          {/* Status */}
+          <div className="flex items-center">
+            <span
+              className="inline-block px-2 py-0.5 rounded-full text-xs font-medium text-white"
+              style={{ backgroundColor: STATUS_COLORS[job.status] || '#6B7280' }}
+            >
+              {STATUS_LABELS[job.status] || job.status}
+            </span>
+          </div>
+        </div>
+
+        {/* SM8 link button */}
+        <div className="px-5 pb-5">
+          <button
+            onClick={() => window.open(sm8Url, '_blank')}
+            className="w-full py-2.5 rounded-xl text-sm font-semibold text-white"
+            style={{ backgroundColor: '#0D9488' }}
+          >
+            View in ServiceM8
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // MAIN COMPONENT
 // ---------------------------------------------------------------------------
 
@@ -155,6 +244,10 @@ export default function LandscapeCalendar() {
   // Tooltip (desktop/tablet only)
   const [tooltip, setTooltip] = useState(null);
   const tooltipRef = useRef(null);
+
+  // Job detail popup
+  const [selectedJob, setSelectedJob] = useState(null);
+  const [selectedCrewId, setSelectedCrewId] = useState(null);
 
   // Date picker popup
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -385,8 +478,9 @@ export default function LandscapeCalendar() {
                       return (
                         <div
                           key={job.job_uuid}
-                          className="bg-gray-50 rounded-lg mb-1.5 px-3 py-2"
+                          className="bg-gray-50 rounded-lg mb-1.5 px-3 py-2 cursor-pointer active:bg-gray-100"
                           style={{ borderLeft: `4px solid ${meta.color}` }}
+                          onClick={() => { setSelectedJob(job); setSelectedCrewId(crewId); }}
                         >
                           <div className="text-sm font-bold text-gray-900 truncate">{job.client_name}</div>
                           <div className="text-xs text-gray-500 mt-0.5">
@@ -409,6 +503,9 @@ export default function LandscapeCalendar() {
             No jobs scheduled for this period
           </div>
         )}
+
+        {/* Job detail popup */}
+        {selectedJob && <JobDetailModal job={selectedJob} crewId={selectedCrewId} onClose={() => { setSelectedJob(null); setSelectedCrewId(null); }} />}
       </div>
     );
   }
@@ -587,6 +684,7 @@ export default function LandscapeCalendar() {
                               height: pos.height,
                               backgroundColor: meta.color,
                             }}
+                            onClick={() => { setSelectedJob(job); setSelectedCrewId(crewId); setTooltip(null); }}
                             onMouseEnter={(e) => {
                               const rect = e.currentTarget.getBoundingClientRect();
                               setTooltip({
@@ -618,6 +716,9 @@ export default function LandscapeCalendar() {
           </div>
         );
       })}
+
+      {/* Job detail popup */}
+      {selectedJob && <JobDetailModal job={selectedJob} crewId={selectedCrewId} onClose={() => { setSelectedJob(null); setSelectedCrewId(null); }} />}
 
       {/* Tooltip */}
       {tooltip && (
