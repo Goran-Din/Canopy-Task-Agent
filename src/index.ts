@@ -12,6 +12,7 @@ import { authMiddleware, loginRoute } from './dashboard/auth';
 import invoiceRoutes from './dashboard/invoiceRoutes';
 import commentRoutes from './dashboard/commentRoutes';
 import landscapeRoutes from './dashboard/landscapeRoutes';
+import dashboardRouter from './api/dashboardRouter';
 
 async function main(): Promise<void> {
   console.log(`Starting Canopy Task Agent — ${config.environment}`);
@@ -40,10 +41,26 @@ async function main(): Promise<void> {
     res.json({ status: 'ok', agent: 'Canopy Task Agent', timestamp: new Date().toISOString() });
   });
 
-  // Serve React dashboard (no auth — the React app handles login via API)
-  app.use('/crews', express.static(path.join(__dirname, '../dashboard/dist')));
+  // Serve React dashboards (no auth on static — the React apps handle login via API)
+  const distDir = path.join(__dirname, '../dashboard/dist');
+  app.use('/assets', express.static(path.join(distDir, 'assets')));
+
+  // Hardscape dashboard — serves hardscape.html specifically
+  app.use('/hardscape/assets', express.static(path.join(distDir, 'assets')));
+  app.get('/hardscape', (_req, res) => {
+    res.sendFile(path.join(distDir, 'hardscape.html'));
+  });
+  app.get('/hardscape/', (_req, res) => {
+    res.sendFile(path.join(distDir, 'hardscape.html'));
+  });
+  app.get('/hardscape/*', (_req, res) => {
+    res.sendFile(path.join(distDir, 'hardscape.html'));
+  });
+
+  // Landscape dashboard — serves index.html
+  app.use('/crews', express.static(distDir));
   app.get('/crews/*', (_req, res) => {
-    res.sendFile(path.join(__dirname, '../dashboard/dist/index.html'));
+    res.sendFile(path.join(distDir, 'index.html'));
   });
 
   // Dashboard API routes
@@ -51,6 +68,7 @@ async function main(): Promise<void> {
   app.use('/api', authMiddleware, invoiceRoutes);
   app.use('/api', authMiddleware, commentRoutes);
   app.use('/', authMiddleware, landscapeRoutes);
+  app.use('/', authMiddleware, dashboardRouter);
 
   app.listen(config.port, () => {
     console.log(`Canopy Task Agent listening on port ${config.port}`);
