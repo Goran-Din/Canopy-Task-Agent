@@ -411,6 +411,99 @@ export async function sendMorningAlertNow(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// On-demand fetch for arbitrary date (used by dashboard route)
+// ---------------------------------------------------------------------------
+
+export async function fetchScheduleForDate(dateStr: string): Promise<LandscapeCrewSchedule[]> {
+  // Load crew lead UUIDs from config_store
+  const leadUuids: Record<LandscapeCrewId, string> = { lp1: '', lp2: '', lp3: '', lp4: '' };
+  for (const crewId of CREW_IDS) {
+    const val = await getConfigValue(`${crewId}_lead_uuid`);
+    if (val) leadUuids[crewId] = val;
+  }
+
+  const uuidToCrewId: Record<string, LandscapeCrewId> = {};
+  for (const crewId of CREW_IDS) {
+    if (leadUuids[crewId]) uuidToCrewId[leadUuids[crewId]] = crewId;
+  }
+
+  const allStaff = await fetchAllStaff();
+  const staffNameMap: Record<string, string> = {};
+  for (const s of allStaff) staffNameMap[s.uuid] = s.first;
+
+  const leadNames: Record<LandscapeCrewId, string> = { lp1: '', lp2: '', lp3: '', lp4: '' };
+  for (const crewId of CREW_IDS) leadNames[crewId] = staffNameMap[leadUuids[crewId]] || crewId.toUpperCase();
+
+  const allJobs = await fetchAllActiveJobs();
+  const relevantJobs = allJobs.filter(
+    (j) => j.date === dateStr && (j.status === 'Work Order' || j.status === 'In Progress')
+  );
+
+  const companyCache: Record<string, string> = {};
+  const crewJobs: Record<LandscapeCrewId, LandscapeJobCard[]> = { lp1: [], lp2: [], lp3: [], lp4: [] };
+
+  for (const job of relevantJobs) {
+    try {
+      const allocations = await fetchStaffAllocations(job.uuid);
+      if (allocations.length === 0) continue;
+      allocations.sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+      const crewId = uuidToCrewId[allocations[0].staff_uuid];
+      if (!crewId) continue;
+
+      if (!companyCache[job.company_uuid]) {
+        const company = await fetchCompany(job.company_uuid);
+        companyCache[job.company_uuid] = company?.name || 'Unknown Client';
+      }
+
+      const employees = allocations.map((a) => ({
+        uuid: a.staff_uuid,
+        name: staffNameMap[a.staff_uuid] || 'Unknown',
+        is_lead: a.staff_uuid === leadUuids[crewId],
+      }));
+
+      let comment: string | null = null;
+      try {
+        const commentRes = await pool.query('SELECT comment_text FROM job_comments WHERE sm8_job_uuid = $1', [job.uuid]);
+        comment = commentRes.rows[0]?.comment_text || null;
+      } catch { /* ignore */ }
+
+      let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
+      if (job.status === 'In Progress') jobStatus = 'in_progress';
+
+      crewJobs[crewId].push({
+        job_uuid: job.uuid,
+        job_number: job.generated_job_id || '',
+        client_name: companyCache[job.company_uuid],
+        address: job.job_address || '',
+        description: job.job_description || '',
+        scheduled_start: allocations[0].start_time || '',
+        estimated_hours: job.total_estimate_hours || 0,
+        status: jobStatus,
+        employees,
+        invoice: null,
+        comment,
+      });
+    } catch { /* skip job */ }
+  }
+
+  const WORK_DAY_HOURS = 8;
+  return CREW_IDS.map((crewId) => {
+    const jobs = crewJobs[crewId].sort((a, b) => (a.scheduled_start || '').localeCompare(b.scheduled_start || ''));
+    const totalHours = jobs.reduce((sum, j) => sum + j.estimated_hours, 0);
+    const openHours = Math.max(0, WORK_DAY_HOURS - totalHours);
+    return {
+      crew_id: crewId,
+      lead_name: leadNames[crewId],
+      color: CREW_COLORS[crewId],
+      jobs,
+      total_hours: totalHours,
+      has_open_time: openHours > 0,
+      open_hours: openHours,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 

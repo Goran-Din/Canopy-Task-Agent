@@ -9,7 +9,8 @@ import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
 import { getScheduleCache } from '../workers/landscapeSync';
-import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId } from '../types';
+import { createProspect, updateProspectStage, assignCrew, delayCrewJobs } from '../tools/hardscape';
+import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId, CreateProspectInput, UpdateProspectStageInput, AssignCrewInput, DelayCrewJobsInput } from '../types';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -91,6 +92,26 @@ async function executeToolCall(
         const crewId = toolInput.crew_id as LandscapeCrewId | undefined;
         const filtered = crewId ? schedules.filter((s) => s.crew_id === crewId) : schedules;
         return JSON.stringify({ schedules: filtered, lastSync: cache.lastSync, date });
+      }
+
+      case 'create_prospect': {
+        const input = toolInput as unknown as CreateProspectInput;
+        return await createProspect(input, user.telegram_id);
+      }
+
+      case 'update_prospect_stage': {
+        const input = toolInput as unknown as UpdateProspectStageInput;
+        return await updateProspectStage(input, user.telegram_id);
+      }
+
+      case 'assign_crew': {
+        const input = toolInput as unknown as AssignCrewInput;
+        return await assignCrew(input, user.telegram_id);
+      }
+
+      case 'delay_crew_jobs': {
+        const input = toolInput as unknown as DelayCrewJobsInput;
+        return await delayCrewJobs(input, user.telegram_id);
       }
 
       default:

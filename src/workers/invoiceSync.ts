@@ -265,7 +265,106 @@ async function syncInvoices(): Promise<void> {
       }
     }
 
-    // 6. Log summary
+    // 6. Sync hardscape prospects
+    let hardscapeMatched = 0;
+    try {
+      const hardscapeResult = await pool.query(`
+        SELECT sm8_job_uuid, sm8_client_name
+        FROM hardscape_prospects
+        WHERE stage NOT IN ('completed', 'closed_lost')
+        AND sm8_job_uuid IS NOT NULL
+      `);
+
+      for (const row of hardscapeResult.rows) {
+        try {
+          const normalizedClient = normalizeName(row.sm8_client_name);
+          const xeroInv = invoiceMap.get(normalizedClient);
+
+          let invoiceStatus = 'not_invoiced';
+          let xeroInvoiceId: string | null = null;
+          let invoiceNumber: string | null = null;
+          let invoiceAmount: number | null = null;
+          let dueDate: string | null = null;
+          let paidDate: string | null = null;
+
+          if (xeroInv) {
+            hardscapeMatched++;
+            xeroInvoiceId = xeroInv.InvoiceID;
+            invoiceNumber = xeroInv.InvoiceNumber;
+            invoiceAmount = xeroInv.Total;
+
+            const dueDateStr = xeroInv.DueDate
+              ? xeroInv.DueDate.replace(/\/Date\((\d+)\)\//, (_m, ms) =>
+                  new Date(parseInt(ms)).toISOString().split('T')[0]
+                )
+              : null;
+            dueDate = dueDateStr;
+
+            if (xeroInv.Status === 'PAID') {
+              invoiceStatus = 'paid';
+              paidDate = xeroInv.FullyPaidOnDate
+                ? xeroInv.FullyPaidOnDate.replace(/\/Date\((\d+)\)\//, (_m, ms) =>
+                    new Date(parseInt(ms)).toISOString().split('T')[0]
+                  )
+                : null;
+            } else if (xeroInv.Status === 'AUTHORISED') {
+              if (dueDateStr && dueDateStr < todayISO()) {
+                invoiceStatus = 'overdue';
+              } else {
+                invoiceStatus = 'invoiced';
+              }
+            }
+          }
+
+          await pool.query(
+            `INSERT INTO invoice_cache
+              (sm8_job_uuid, sm8_client_name, division, xero_invoice_id,
+               invoice_number, invoice_amount, invoice_status, due_date, paid_date, last_synced_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+             ON CONFLICT (sm8_job_uuid) DO UPDATE SET
+               sm8_client_name = EXCLUDED.sm8_client_name,
+               division = EXCLUDED.division,
+               xero_invoice_id = EXCLUDED.xero_invoice_id,
+               invoice_number = EXCLUDED.invoice_number,
+               invoice_amount = EXCLUDED.invoice_amount,
+               invoice_status = EXCLUDED.invoice_status,
+               due_date = EXCLUDED.due_date,
+               paid_date = EXCLUDED.paid_date,
+               last_synced_at = NOW()`,
+            [
+              row.sm8_job_uuid,
+              row.sm8_client_name,
+              'hardscape',
+              xeroInvoiceId,
+              invoiceNumber,
+              invoiceAmount,
+              invoiceStatus,
+              dueDate,
+              paidDate,
+            ]
+          );
+        } catch (err) {
+          logger.warn({
+            event: 'invoice_sync_hardscape_job_error',
+            job_uuid: row.sm8_job_uuid,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
+      logger.info({
+        event: 'invoice_sync_hardscape_loaded',
+        prospects: hardscapeResult.rows.length,
+        xero_matched: hardscapeMatched,
+      });
+    } catch (err) {
+      logger.error({
+        event: 'invoice_sync_hardscape_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // 7. Log summary
     if (unmatchedNames.length > 0) {
       logger.info({
         event: 'invoice_sync_unmatched_clients',
@@ -276,8 +375,9 @@ async function syncInvoices(): Promise<void> {
 
     logger.info({
       event: 'invoice_sync_complete',
-      jobs_synced: relevantJobs.length,
-      xero_matched: matchedCount,
+      landscape_synced: relevantJobs.length,
+      landscape_matched: matchedCount,
+      hardscape_matched: hardscapeMatched,
       unmatched: unmatchedNames.length,
     });
   } catch (err) {

@@ -105,3 +105,92 @@ export interface LandscapeCrewSchedule {
 }
 
 export type LandscapeCrewId = 'lp1' | 'lp2' | 'lp3' | 'lp4';
+
+export type ProspectStage =
+  | 'initial_contact'
+  | 'site_visit'
+  | 'quote_sent'
+  | 'revision_requested'
+  | 'visual_rendering'
+  | 'final_quote'
+  | 'deposit_invoice'
+  | 'scheduled'
+  | 'in_progress'
+  | 'completed'
+  | 'closed_lost';
+
+export type HardscapeCrewId = 'hp1' | 'hp2';
+
+export interface HardscapeProspect {
+  id: number;
+  sm8_client_uuid: string;
+  sm8_client_name: string;
+  sm8_job_uuid?: string;
+  sm8_job_number?: string;
+  stage: ProspectStage;
+  assigned_to?: number;
+  estimated_crew_days?: number;
+  crew_assignment?: HardscapeCrewId;
+  scheduled_start?: string;
+  client_folder_url?: string;
+  notes?: string;
+  sm8_last_synced?: string;
+  stage_updated_at: string;
+  created_at: string;
+  updated_at: string;
+  invoice?: InvoiceBadge | null;
+  comment?: string | null;
+}
+
+export interface ProspectComment {
+  id: number;
+  prospect_id: number;
+  source: 'manual' | 'sm8_sync' | 'agent';
+  author?: string;
+  content: string;
+  sm8_activity_uuid?: string;
+  editable: boolean;
+  activity_date: string;
+  created_at: string;
+}
+
+export interface CrewScheduleEntry {
+  id: number;
+  prospect_id: number;
+  crew: HardscapeCrewId;
+  start_date: string;
+  estimated_days: number;
+  actual_days?: number;
+  status: 'scheduled' | 'in_progress' | 'completed' | 'delayed';
+  delay_reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProspectInput {
+  client_name: string;
+  stage?: ProspectStage;
+  sm8_job_uuid?: string;
+  notes?: string;
+  client_folder_url?: string;
+}
+
+export interface UpdateProspectStageInput {
+  client_name: string;
+  new_stage: ProspectStage;
+  comment?: string;
+}
+
+export interface AssignCrewInput {
+  client_name: string;
+  crew: HardscapeCrewId;
+  start_date: string;
+  estimated_days: number;
+}
+
+export interface DelayCrewJobsInput {
+  crew: HardscapeCrewId;
+  days: number;
+  from_date?: string;
+  reason?: string;
+}

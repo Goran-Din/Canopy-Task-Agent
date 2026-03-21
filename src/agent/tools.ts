@@ -214,4 +214,112 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: [],
     },
   },
+  {
+    name: 'create_prospect',
+    description: 'Creates a new hardscape prospect in the pipeline. Use when a team member mentions a new hardscape client. Always confirm the client name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name — will be matched against ServiceM8 records',
+        },
+        stage: {
+          type: 'string',
+          enum: ['initial_contact', 'site_visit', 'quote_sent', 'revision_requested', 'visual_rendering', 'final_quote', 'deposit_invoice', 'scheduled', 'in_progress', 'completed', 'closed_lost'],
+          description: 'Pipeline stage — defaults to initial_contact if omitted',
+        },
+        sm8_job_uuid: {
+          type: 'string',
+          description: 'ServiceM8 job UUID if known',
+        },
+        notes: {
+          type: 'string',
+          description: 'Additional notes about the prospect',
+        },
+        client_folder_url: {
+          type: 'string',
+          description: 'URL to the client folder (Google Drive, etc.)',
+        },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
+    name: 'update_prospect_stage',
+    description: 'Updates the pipeline stage for a hardscape prospect. Use when team member reports progress — quote sent, deposit paid, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name to search for in the prospect pipeline',
+        },
+        new_stage: {
+          type: 'string',
+          enum: ['initial_contact', 'site_visit', 'quote_sent', 'revision_requested', 'visual_rendering', 'final_quote', 'deposit_invoice', 'scheduled', 'in_progress', 'completed', 'closed_lost'],
+          description: 'New pipeline stage',
+        },
+        comment: {
+          type: 'string',
+          description: 'Optional comment to log with the stage change',
+        },
+      },
+      required: ['client_name', 'new_stage'],
+    },
+  },
+  {
+    name: 'assign_crew',
+    description: 'Assigns a hardscape job to HP#1 or HP#2 with a start date. Use when deposit is confirmed. Sets stage to Scheduled.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name to search for in the prospect pipeline',
+        },
+        crew: {
+          type: 'string',
+          enum: ['hp1', 'hp2'],
+          description: 'Hardscape crew — hp1 = Rigo Tello, hp2 = Daniel Tello',
+        },
+        start_date: {
+          type: 'string',
+          description: 'ISO date for crew start (e.g. 2026-04-15)',
+        },
+        estimated_days: {
+          type: 'number',
+          description: 'Estimated number of crew days to complete the job',
+        },
+      },
+      required: ['client_name', 'crew', 'start_date', 'estimated_days'],
+    },
+  },
+  {
+    name: 'delay_crew_jobs',
+    description: 'Shifts all scheduled jobs for HP#1 or HP#2 forward by N days. Use for rain days or delays.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        crew: {
+          type: 'string',
+          enum: ['hp1', 'hp2'],
+          description: 'Hardscape crew — hp1 = Rigo Tello, hp2 = Daniel Tello',
+        },
+        days: {
+          type: 'number',
+          description: 'Number of days to shift forward',
+        },
+        from_date: {
+          type: 'string',
+          description: 'Only shift jobs on or after this ISO date — defaults to today',
+        },
+        reason: {
+          type: 'string',
+          description: 'Reason for the delay (e.g. rain, material delay)',
+        },
+      },
+      required: ['crew', 'days'],
+    },
+  },
 ];

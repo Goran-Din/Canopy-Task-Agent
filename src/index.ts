@@ -1,4 +1,5 @@
 import express from 'express';
+import path from 'path';
 import { config } from './config';
 import { initDatabase } from './db/init';
 import { bot } from './telegram/bot';
@@ -6,9 +7,11 @@ import { registerHandlers } from './telegram/handlers';
 import { startLandscapeSync } from './workers/landscapeSync';
 import { startInvoiceSync } from './workers/invoiceSync';
 import { startUninvoicedAlert } from './workers/uninvoicedAlert';
+import { startHardscapeSync } from './workers/hardscapeSync';
 import { authMiddleware, loginRoute } from './dashboard/auth';
 import invoiceRoutes from './dashboard/invoiceRoutes';
 import commentRoutes from './dashboard/commentRoutes';
+import landscapeRoutes from './dashboard/landscapeRoutes';
 
 async function main(): Promise<void> {
   console.log(`Starting Canopy Task Agent — ${config.environment}`);
@@ -22,6 +25,7 @@ async function main(): Promise<void> {
   startLandscapeSync();    // every 15 min — SM8 crew sync + 6:30 AM morning alert
   startInvoiceSync();      // every 15 min — Xero invoice cache
   startUninvoicedAlert();  // 6:30 AM CT — uninvoiced job alert
+  startHardscapeSync();    // hourly — SM8 hardscape quote detect, activity sync, completion check
   console.log('All workers started');
 
   const app = express();
@@ -36,10 +40,17 @@ async function main(): Promise<void> {
     res.json({ status: 'ok', agent: 'Canopy Task Agent', timestamp: new Date().toISOString() });
   });
 
-  // Dashboard routes
+  // Serve React dashboard (no auth — the React app handles login via API)
+  app.use('/crews', express.static(path.join(__dirname, '../dashboard/dist')));
+  app.get('/crews/*', (_req, res) => {
+    res.sendFile(path.join(__dirname, '../dashboard/dist/index.html'));
+  });
+
+  // Dashboard API routes
   app.post('/dashboard/login', loginRoute);
   app.use('/api', authMiddleware, invoiceRoutes);
   app.use('/api', authMiddleware, commentRoutes);
+  app.use('/', authMiddleware, landscapeRoutes);
 
   app.listen(config.port, () => {
     console.log(`Canopy Task Agent listening on port ${config.port}`);
