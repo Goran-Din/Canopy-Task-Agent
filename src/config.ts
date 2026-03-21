@@ -64,4 +64,12 @@ export const config = {
     clientSecret: required('XERO_CLIENT_SECRET'),
     redirectUri: required('XERO_REDIRECT_URI'),
   },
+
+  dashboard: {
+    password: process.env.DASHBOARD_PASSWORD || '',
+  },
+
+  alerts: {
+    uninvoicedRecipients: process.env.UNINVOICED_ALERT_RECIPIENTS || '',
+  },
 };

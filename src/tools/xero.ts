@@ -6,7 +6,7 @@ import { XeroQueryInput } from '../types';
 const XERO_TOKEN_URL = 'https://identity.xero.com/connect/token';
 const XERO_API_URL = 'https://api.xero.com/api.xro/2.0';
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   const stored = await getConfigValue('xero_access_token');
   const expiry = await getConfigValue('xero_token_expiry');
 

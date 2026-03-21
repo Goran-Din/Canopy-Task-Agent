@@ -194,4 +194,24 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: ['query_type'],
     },
   },
+  {
+    name: 'get_crew_schedule',
+    description: 'Returns the current landscape crew schedule from the in-memory cache (refreshed every 15 minutes from ServiceM8). Use this to answer any questions about landscape crew schedules, jobs, or availability. Never call ServiceM8 directly for schedule queries — always use this tool.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        crew_id: {
+          type: 'string',
+          enum: ['lp1', 'lp2', 'lp3', 'lp4'],
+          description: 'Specific crew to query. Omit to get all 4 crews.',
+        },
+        date: {
+          type: 'string',
+          enum: ['today', 'tomorrow'],
+          description: "Which day's schedule to return. Defaults to today.",
+        },
+      },
+      required: [],
+    },
+  },
 ];

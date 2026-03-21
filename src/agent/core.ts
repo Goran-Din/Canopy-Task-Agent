@@ -8,7 +8,8 @@ import { getJobStatus, updateJobStatus, createJob } from '../tools/servicem8';
 import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
-import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput } from '../types';
+import { getScheduleCache } from '../workers/landscapeSync';
+import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId } from '../types';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -78,6 +79,18 @@ async function executeToolCall(
         const input = toolInput as unknown as XeroQueryInput;
         const result = await queryXeroInvoices(input);
         return JSON.stringify(result);
+      }
+
+      case 'get_crew_schedule': {
+        const cache = getScheduleCache();
+        if (!cache.lastSync) {
+          return JSON.stringify({ error: 'Schedule data is refreshing, please try again in a moment.' });
+        }
+        const date = (toolInput.date as string) || 'today';
+        const schedules = date === 'tomorrow' ? cache.tomorrow : cache.today;
+        const crewId = toolInput.crew_id as LandscapeCrewId | undefined;
+        const filtered = crewId ? schedules.filter((s) => s.crew_id === crewId) : schedules;
+        return JSON.stringify({ schedules: filtered, lastSync: cache.lastSync, date });
       }
 
       default:

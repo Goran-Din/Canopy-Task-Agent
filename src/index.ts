@@ -3,6 +3,12 @@ import { config } from './config';
 import { initDatabase } from './db/init';
 import { bot } from './telegram/bot';
 import { registerHandlers } from './telegram/handlers';
+import { startLandscapeSync } from './workers/landscapeSync';
+import { startInvoiceSync } from './workers/invoiceSync';
+import { startUninvoicedAlert } from './workers/uninvoicedAlert';
+import { authMiddleware, loginRoute } from './dashboard/auth';
+import invoiceRoutes from './dashboard/invoiceRoutes';
+import commentRoutes from './dashboard/commentRoutes';
 
 async function main(): Promise<void> {
   console.log(`Starting Canopy Task Agent — ${config.environment}`);
@@ -12,6 +18,11 @@ async function main(): Promise<void> {
 
   registerHandlers();
   console.log('Telegram handlers registered');
+
+  startLandscapeSync();    // every 15 min — SM8 crew sync + 6:30 AM morning alert
+  startInvoiceSync();      // every 15 min — Xero invoice cache
+  startUninvoicedAlert();  // 6:30 AM CT — uninvoiced job alert
+  console.log('All workers started');
 
   const app = express();
   app.use(express.json());
@@ -24,6 +35,11 @@ async function main(): Promise<void> {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', agent: 'Canopy Task Agent', timestamp: new Date().toISOString() });
   });
+
+  // Dashboard routes
+  app.post('/dashboard/login', loginRoute);
+  app.use('/api', authMiddleware, invoiceRoutes);
+  app.use('/api', authMiddleware, commentRoutes);
 
   app.listen(config.port, () => {
     console.log(`Canopy Task Agent listening on port ${config.port}`);

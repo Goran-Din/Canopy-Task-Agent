@@ -71,3 +71,37 @@ export interface XeroQueryInput {
   client_name?: string;
   invoice_number?: string;
 }
+
+export interface InvoiceBadge {
+  status: 'not_invoiced' | 'invoiced' | 'paid' | 'overdue';
+  invoice_number: string | null;
+  invoice_amount: number | null;
+  due_date: string | null;
+  paid_date: string | null;
+}
+
+export interface LandscapeJobCard {
+  job_uuid: string;
+  job_number: string;
+  client_name: string;
+  address: string;
+  description: string;
+  scheduled_start: string;
+  estimated_hours: number;
+  status: 'scheduled' | 'in_progress' | 'completed';
+  employees: { uuid: string; name: string; is_lead: boolean; }[];
+  invoice: InvoiceBadge | null;
+  comment: string | null;
+}
+
+export interface LandscapeCrewSchedule {
+  crew_id: 'lp1' | 'lp2' | 'lp3' | 'lp4';
+  lead_name: string;
+  color: string;
+  jobs: LandscapeJobCard[];
+  total_hours: number;
+  has_open_time: boolean;
+  open_hours: number;
+}
+
+export type LandscapeCrewId = 'lp1' | 'lp2' | 'lp3' | 'lp4';
