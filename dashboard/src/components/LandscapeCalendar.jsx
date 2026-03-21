@@ -151,7 +151,7 @@ function JobDetailModal({ job, crewId, onClose }) {
   const endTime = formatTime(job.scheduled_end);
   const timeRange = startTime && endTime ? `${startTime} – ${endTime}` : startTime || 'Not set';
   const durationText = job.estimated_hours > 0 ? `${job.estimated_hours} hour${job.estimated_hours !== 1 ? 's' : ''}` : '';
-  const sm8Url = `https://go.servicem8.com/#job,${job.job_uuid}`;
+  const sm8Url = 'https://go.servicem8.com/job_dispatch';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
@@ -222,8 +222,11 @@ function JobDetailModal({ job, crewId, onClose }) {
             className="w-full py-2.5 rounded-xl text-sm font-semibold text-white"
             style={{ backgroundColor: '#0D9488' }}
           >
-            View in ServiceM8
+            Open SM8 Dispatch Board
           </button>
+          <div className="text-[11px] text-gray-400 text-center mt-1.5">
+            Opens ServiceM8 dispatch board — search for job #{job.job_number} once inside
+          </div>
         </div>
       </div>
     </div>

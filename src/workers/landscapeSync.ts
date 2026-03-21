@@ -183,16 +183,41 @@ function buildActivityMap(activities: SM8JobActivity[]): Record<string, SM8Staff
   return map;
 }
 
-/** Calculate estimated hours from the first allocation's start/end times */
-function calcEstimatedHours(allocations: SM8StaffAllocation[]): number {
-  if (allocations.length === 0) return 0;
+/** Calculate job timing from the first allocation's start/end times.
+ *  All-day jobs (>= 23 hours) are normalised to 7 AM – 5 PM (10 h). */
+function calcJobTiming(
+  allocations: SM8StaffAllocation[],
+  jobDate: string
+): { scheduledStart: string; scheduledEnd: string; estimatedHours: number } {
+  if (allocations.length === 0)
+    return { scheduledStart: '', scheduledEnd: '', estimatedHours: 0 };
+
   const first = allocations[0];
-  if (!first.start_time || !first.end_time) return 0;
+  if (!first.start_time || !first.end_time)
+    return { scheduledStart: first.start_time || '', scheduledEnd: first.end_time || '', estimatedHours: 0 };
+
   const start = new Date(first.start_time.replace(' ', 'T'));
   const end = new Date(first.end_time.replace(' ', 'T'));
   const diffMs = end.getTime() - start.getTime();
-  if (diffMs <= 0 || isNaN(diffMs)) return 0;
-  return Math.round((diffMs / 3600000) * 10) / 10; // round to 1 decimal
+  if (diffMs <= 0 || isNaN(diffMs))
+    return { scheduledStart: first.start_time, scheduledEnd: first.end_time, estimatedHours: 0 };
+
+  const hours = diffMs / 3600000;
+
+  if (hours >= 23) {
+    // All-day job — default to 7 AM - 5 PM
+    return {
+      scheduledStart: jobDate + ' 07:00:00',
+      scheduledEnd: jobDate + ' 17:00:00',
+      estimatedHours: 10,
+    };
+  }
+
+  return {
+    scheduledStart: first.start_time,
+    scheduledEnd: first.end_time,
+    estimatedHours: Math.round(hours * 10) / 10,
+  };
 }
 
 async function fetchAllStaff(): Promise<SM8Staff[]> {
@@ -330,14 +355,16 @@ async function syncSchedule(): Promise<void> {
         let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
         if (job.status === 'In Progress') jobStatus = 'in_progress';
 
+        const timing = calcJobTiming(allocations, (job.date || '').substring(0, 10));
+
         const card: LandscapeJobCard = {
           job_uuid: job.uuid,
           job_number: job.generated_job_id || '',
           client_name: clientName,
           address: job.job_address || '',
           description: job.job_description || '',
-          scheduled_start: allocations[0].start_time || '',
-          estimated_hours: calcEstimatedHours(allocations),
+          scheduled_start: timing.scheduledStart,
+          estimated_hours: timing.estimatedHours,
           status: jobStatus,
           employees,
           invoice: null,
@@ -539,14 +566,16 @@ export async function fetchScheduleForDate(dateStr: string): Promise<LandscapeCr
       let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
       if (job.status === 'In Progress') jobStatus = 'in_progress';
 
+      const timing = calcJobTiming(allocations, dateStr);
+
       crewJobs[crewId].push({
         job_uuid: job.uuid,
         job_number: job.generated_job_id || '',
         client_name: companyMap[job.company_uuid] || job.job_description || 'Unknown Client',
         address: job.job_address || '',
         description: job.job_description || '',
-        scheduled_start: allocations[0].start_time || '',
-        estimated_hours: calcEstimatedHours(allocations),
+        scheduled_start: timing.scheduledStart,
+        estimated_hours: timing.estimatedHours,
         status: jobStatus,
         employees,
         invoice: null,
@@ -719,14 +748,17 @@ export async function fetchCalendarRange(
         let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
         if (job.status === 'In Progress') jobStatus = 'in_progress';
 
+        const jobDateStr = (job.date || '').substring(0, 10);
+        const timing = calcJobTiming(allocations, jobDateStr);
+
         result[crewId].jobs.push({
           job_uuid: job.uuid,
           job_number: job.generated_job_id || '',
           client_name: companyMap[job.company_uuid] || job.job_description || 'Unknown Client',
-          date: (job.date || '').substring(0, 10),
-          scheduled_start: allocations[0].start_time || '',
-          scheduled_end: allocations[0].end_time || '',
-          estimated_hours: calcEstimatedHours(allocations),
+          date: jobDateStr,
+          scheduled_start: timing.scheduledStart,
+          scheduled_end: timing.scheduledEnd,
+          estimated_hours: timing.estimatedHours,
           employee_count: allocations.length,
           status: jobStatus,
         });
