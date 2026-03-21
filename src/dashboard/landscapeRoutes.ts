@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { getScheduleCache, fetchScheduleForDate } from '../workers/landscapeSync';
+import { getScheduleCache, fetchScheduleForDate, fetchCalendarRange } from '../workers/landscapeSync';
 import { pool } from '../db/pool';
 import logger from '../logger';
 import { InvoiceBadge, LandscapeCrewSchedule } from '../types';
@@ -95,6 +95,24 @@ router.get('/landscape/schedule', async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({
       event: 'landscape_route_error',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.get('/landscape/calendar', async (req: Request, res: Response) => {
+  try {
+    const todayDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    const fromDate = (req.query.from_date as string) || todayDate;
+    const days = Math.min(Math.max(parseInt((req.query.days as string) || '30', 10) || 30, 1), 90);
+
+    const crews = await fetchCalendarRange(fromDate, days);
+
+    res.json({ from_date: fromDate, days, crews });
+  } catch (err) {
+    logger.error({
+      event: 'landscape_calendar_error',
       error: err instanceof Error ? err.message : String(err),
     });
     res.status(500).json({ error: 'Internal server error' });

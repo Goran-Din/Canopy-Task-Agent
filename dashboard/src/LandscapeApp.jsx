@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import CrewColumn from './components/CrewColumn';
+import LandscapeCalendar from './components/LandscapeCalendar';
+import DatePickerCalendar from './components/DatePickerCalendar';
 
 const REFRESH_INTERVAL = 15 * 60 * 1000; // 15 minutes
 const MAX_DAYS_FORWARD = 30;
@@ -51,113 +53,6 @@ function formatSyncTime(iso) {
   }
 }
 
-/** Inline calendar popup for date picking */
-function DatePickerCalendar({ selectedDate, todayStr, onSelect, onClose }) {
-  const ref = useRef(null);
-  const minDate = todayStr;
-  const maxDate = addDays(todayStr, MAX_DAYS_FORWARD);
-
-  // Start viewing the month of the currently selected date
-  const [viewYear, setViewYear] = useState(() => {
-    const d = new Date(selectedDate + 'T12:00:00');
-    return d.getFullYear();
-  });
-  const [viewMonth, setViewMonth] = useState(() => {
-    const d = new Date(selectedDate + 'T12:00:00');
-    return d.getMonth();
-  });
-
-  // Close on click outside
-  useEffect(() => {
-    function handleClick(e) {
-      if (ref.current && !ref.current.contains(e.target)) onClose();
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [onClose]);
-
-  const monthLabel = new Date(viewYear, viewMonth, 1).toLocaleDateString('en-US', {
-    month: 'long',
-    year: 'numeric',
-  });
-
-  // Build day grid
-  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
-  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-
-  const cells = [];
-  for (let i = 0; i < firstDow; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-
-  function prevMonth() {
-    if (viewMonth === 0) { setViewYear(viewYear - 1); setViewMonth(11); }
-    else setViewMonth(viewMonth - 1);
-  }
-  function nextMonth() {
-    if (viewMonth === 11) { setViewYear(viewYear + 1); setViewMonth(0); }
-    else setViewMonth(viewMonth + 1);
-  }
-
-  function toDateStr(day) {
-    const m = String(viewMonth + 1).padStart(2, '0');
-    const dd = String(day).padStart(2, '0');
-    return `${viewYear}-${m}-${dd}`;
-  }
-
-  return (
-    <div
-      ref={ref}
-      className="absolute top-full mt-1 bg-white rounded-xl shadow-lg border border-gray-200 p-3 z-50 w-[280px] left-1/2 -translate-x-1/2 sm:w-[280px] max-sm:left-2 max-sm:right-2 max-sm:translate-x-0 max-sm:w-auto"
-    >
-      {/* Month nav */}
-      <div className="flex items-center justify-between mb-2">
-        <button onClick={prevMonth} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-600 text-sm font-bold">
-          &#8249;
-        </button>
-        <span className="text-sm font-semibold text-gray-800">{monthLabel}</span>
-        <button onClick={nextMonth} className="w-7 h-7 flex items-center justify-center rounded hover:bg-gray-100 text-gray-600 text-sm font-bold">
-          &#8250;
-        </button>
-      </div>
-
-      {/* Day-of-week headers */}
-      <div className="grid grid-cols-7 gap-0 mb-1">
-        {DAY_NAMES.map((n) => (
-          <div key={n} className="text-center text-[10px] font-medium text-gray-400 py-0.5">{n}</div>
-        ))}
-      </div>
-
-      {/* Day cells */}
-      <div className="grid grid-cols-7 gap-0">
-        {cells.map((day, i) => {
-          if (day === null) return <div key={`e${i}`} />;
-          const ds = toDateStr(day);
-          const isSelected = ds === selectedDate;
-          const isCurrentToday = ds === todayStr;
-          const disabled = ds < minDate || ds > maxDate;
-
-          return (
-            <button
-              key={ds}
-              disabled={disabled}
-              onClick={() => { onSelect(ds); onClose(); }}
-              className={`w-9 h-9 mx-auto flex items-center justify-center rounded-full text-xs font-medium relative
-                ${disabled ? 'text-gray-300 cursor-not-allowed' : 'hover:bg-blue-50 text-gray-700'}
-                ${isSelected ? 'bg-blue-600 text-white hover:bg-blue-700' : ''}
-              `}
-            >
-              {day}
-              {isCurrentToday && !isSelected && (
-                <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-blue-600" />
-              )}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 export default function LandscapeApp() {
   const [scheduleData, setScheduleData] = useState(null);
   const [selectedDate, setSelectedDate] = useState(getTodayStr);
@@ -169,6 +64,7 @@ export default function LandscapeApp() {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [view, setView] = useState('schedule'); // 'schedule' | 'calendar'
 
   const todayStr = useMemo(() => getTodayStr(), []);
 
@@ -303,13 +199,14 @@ export default function LandscapeApp() {
     <div className="min-h-screen bg-gray-100">
       {/* Header */}
       <header className="bg-white shadow-sm sticky top-0 z-10">
+        {/* Row 1: title + sync/refresh */}
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-lg font-bold text-gray-900">
             <span className="mr-1">&#127807;</span> Landscape Crew Board
           </h1>
           <div className="flex items-center gap-3 text-xs text-gray-500">
             {scheduleData?.last_sync && (
-              <span>Last sync: {formatSyncTime(scheduleData.last_sync)}</span>
+              <span className="hidden sm:inline">Last sync: {formatSyncTime(scheduleData.last_sync)}</span>
             )}
             <button
               onClick={() => { setLoading(true); fetchSchedule(); }}
@@ -320,9 +217,34 @@ export default function LandscapeApp() {
             </button>
           </div>
         </div>
+        {/* Row 2: Schedule / Calendar toggle */}
+        <div className="max-w-7xl mx-auto px-4 pb-3 flex">
+          <div className="flex rounded-lg overflow-hidden border border-gray-200 w-full sm:w-auto">
+            <button
+              onClick={() => setView('schedule')}
+              className={`flex-1 sm:flex-none min-w-[90px] px-4 py-2 text-[15px] sm:text-xs sm:px-3 sm:py-1.5 font-medium ${
+                view === 'schedule'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              Schedule
+            </button>
+            <button
+              onClick={() => setView('calendar')}
+              className={`flex-1 sm:flex-none min-w-[90px] px-4 py-2 text-[15px] sm:text-xs sm:px-3 sm:py-1.5 font-medium ${
+                view === 'calendar'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              Calendar
+            </button>
+          </div>
+        </div>
 
-        {/* Date navigator */}
-        <div className="max-w-7xl mx-auto px-4 pb-2 flex items-center justify-center gap-2">
+        {/* Date navigator — schedule view only */}
+        {view === 'schedule' && <div className="max-w-7xl mx-auto px-4 pb-2 flex items-center justify-center gap-2">
           <button
             onClick={() => canGoBack && setSelectedDate(addDays(selectedDate, -1))}
             disabled={!canGoBack}
@@ -369,10 +291,10 @@ export default function LandscapeApp() {
               Today
             </button>
           )}
-        </div>
+        </div>}
 
-        {/* Filter bar */}
-        <div className="max-w-7xl mx-auto px-4 pb-3 flex flex-wrap gap-2">
+        {/* Filter bar — schedule view only */}
+        {view === 'schedule' && <div className="max-w-7xl mx-auto px-4 pb-3 flex flex-wrap gap-2">
 
           {/* Crew filter */}
           <div className="flex rounded-lg overflow-hidden border border-gray-200">
@@ -421,16 +343,20 @@ export default function LandscapeApp() {
               </button>
             ))}
           </div>
-        </div>
+        </div>}
       </header>
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {filteredCrews.map((crew) => (
-            <CrewColumn key={crew.crew_id} crew={crew} />
-          ))}
-        </div>
+        {view === 'schedule' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {filteredCrews.map((crew) => (
+              <CrewColumn key={crew.crew_id} crew={crew} />
+            ))}
+          </div>
+        ) : (
+          <LandscapeCalendar />
+        )}
       </main>
     </div>
   );
