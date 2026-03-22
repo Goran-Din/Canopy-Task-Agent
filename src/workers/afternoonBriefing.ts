@@ -4,13 +4,18 @@ import { config } from '../config';
 import { bot } from '../telegram/bot';
 import { getScheduleCache } from './landscapeSync';
 import logger from '../logger';
-import { LandscapeCrewSchedule } from '../types';
+import { LandscapeCrewSchedule, LandscapeJobCard } from '../types';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const GROUP_CHAT_ID = config.telegram.groupId;
+
+// Regional center point: Aurora-Naperville midpoint
+const REGION_LAT = 41.7200;
+const REGION_LON = -88.2000;
+const REGION_LABEL = 'Aurora-Naperville Region';
 
 const CREW_LABELS: Record<string, string> = {
   lp1: 'LP#1',
@@ -50,8 +55,12 @@ function windDegToDir(deg: number): string {
   return WIND_DIRECTIONS[idx];
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // ---------------------------------------------------------------------------
-// Weather fetch
+// Regional weather fetch
 // ---------------------------------------------------------------------------
 
 interface WeatherData {
@@ -67,8 +76,8 @@ async function fetchTomorrowWeather(): Promise<WeatherData | null> {
   try {
     const res = await axios.get('https://api.open-meteo.com/v1/forecast', {
       params: {
-        latitude: 41.7606,
-        longitude: -88.3201,
+        latitude: REGION_LAT,
+        longitude: REGION_LON,
         daily: 'weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,windspeed_10m_max,winddirection_10m_dominant',
         temperature_unit: 'fahrenheit',
         wind_speed_unit: 'mph',
@@ -102,7 +111,137 @@ async function fetchTomorrowWeather(): Promise<WeatherData | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Message builder
+// Per-city geocoding + weather
+// ---------------------------------------------------------------------------
+
+interface CityCoords {
+  latitude: number;
+  longitude: number;
+  name: string;
+}
+
+interface CityWeather {
+  rainChance: number;
+  weatherCode: number;
+}
+
+/** Extract city name from address like "2303 Bill Court, Naperville, IL 60565" */
+function extractCity(address: string): string | null {
+  if (!address) return null;
+  const match = address.match(/,\s*([^,]+),\s*[A-Z]{2}\s*\d{5}/);
+  return match ? match[1].trim() : null;
+}
+
+async function geocodeCity(city: string): Promise<CityCoords | null> {
+  try {
+    const res = await axios.get('https://geocoding-api.open-meteo.com/v1/search', {
+      params: { name: city, count: 1, country_code: 'US' },
+      timeout: 5000,
+    });
+    const result = res.data?.results?.[0];
+    if (!result) return null;
+    return { latitude: result.latitude, longitude: result.longitude, name: result.name };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCityWeather(coords: CityCoords): Promise<CityWeather | null> {
+  try {
+    const res = await axios.get('https://api.open-meteo.com/v1/forecast', {
+      params: {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        daily: 'precipitation_probability_max,weathercode',
+        timezone: 'America/Chicago',
+        forecast_days: 2,
+      },
+      timeout: 5000,
+    });
+    const daily = res.data?.daily;
+    if (!daily) return null;
+    return {
+      rainChance: daily.precipitation_probability_max?.[1] ?? 0,
+      weatherCode: daily.weathercode?.[1] ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+interface JobRainAlert {
+  crewLabel: string;
+  leadName: string;
+  city: string;
+  jobNumber: string;
+  clientName: string;
+  rainChance: number;
+}
+
+/** Fetch per-job rain forecasts for all jobs across all crews */
+async function fetchJobRainAlerts(
+  schedules: LandscapeCrewSchedule[]
+): Promise<JobRainAlert[]> {
+  // Collect unique cities from all job addresses
+  const cityJobs: Map<string, { crew: LandscapeCrewSchedule; job: LandscapeJobCard }[]> = new Map();
+
+  for (const crew of schedules) {
+    for (const job of crew.jobs) {
+      const city = extractCity(job.address);
+      if (!city) continue;
+      const cityLower = city.toLowerCase();
+      if (!cityJobs.has(cityLower)) cityJobs.set(cityLower, []);
+      cityJobs.get(cityLower)!.push({ crew, job });
+    }
+  }
+
+  if (cityJobs.size === 0) return [];
+
+  // Geocode each unique city with 100ms delay between calls
+  const cityCoords: Map<string, CityCoords> = new Map();
+  for (const cityLower of cityJobs.keys()) {
+    const coords = await geocodeCity(cityLower);
+    if (coords) cityCoords.set(cityLower, coords);
+    await delay(100);
+  }
+
+  if (cityCoords.size === 0) return [];
+
+  // Fetch weather for each unique city
+  const cityWeather: Map<string, CityWeather> = new Map();
+  for (const [cityLower, coords] of cityCoords) {
+    const weather = await fetchCityWeather(coords);
+    if (weather) cityWeather.set(cityLower, weather);
+    await delay(100);
+  }
+
+  if (cityWeather.size === 0) return [];
+
+  // Build rain alerts
+  const alerts: JobRainAlert[] = [];
+  for (const [cityLower, jobs] of cityJobs) {
+    const weather = cityWeather.get(cityLower);
+    if (!weather) continue;
+    const displayCity = cityCoords.get(cityLower)?.name || cityLower;
+    for (const { crew, job } of jobs) {
+      alerts.push({
+        crewLabel: CREW_LABELS[crew.crew_id] || crew.crew_id.toUpperCase(),
+        leadName: crew.lead_name,
+        city: displayCity,
+        jobNumber: job.job_number,
+        clientName: job.client_name,
+        rainChance: weather.rainChance,
+      });
+    }
+  }
+
+  // Sort by rain chance descending
+  alerts.sort((a, b) => b.rainChance - a.rainChance);
+  return alerts;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
 // ---------------------------------------------------------------------------
 
 function formatTime(dateStr: string): string {
@@ -129,9 +268,14 @@ function getTomorrowLabel(): string {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Message builder
+// ---------------------------------------------------------------------------
+
 function buildBriefingMessage(
   weather: WeatherData | null,
-  schedules: LandscapeCrewSchedule[]
+  schedules: LandscapeCrewSchedule[],
+  rainAlerts: JobRainAlert[]
 ): string {
   const tomorrowLabel = getTomorrowLabel();
   const lines: string[] = [];
@@ -141,7 +285,7 @@ function buildBriefingMessage(
 
   // Weather section
   if (weather) {
-    lines.push('\u{1F321}\uFE0F <b>Weather \u2014 Aurora, IL</b>');
+    lines.push(`\u{1F321}\uFE0F <b>${REGION_LABEL}</b>`);
     lines.push(`Conditions: ${weather.conditions}`);
     lines.push(`High: ${weather.high}\u00B0F  |  Low: ${weather.low}\u00B0F`);
     lines.push(`Rain chance: ${weather.rainChance}%`);
@@ -150,8 +294,23 @@ function buildBriefingMessage(
       lines.push('\u26A0\uFE0F Rain likely \u2014 consider crew adjustments');
     }
   } else {
-    lines.push('\u{1F321}\uFE0F <b>Weather \u2014 Aurora, IL</b>');
+    lines.push(`\u{1F321}\uFE0F <b>${REGION_LABEL}</b>`);
     lines.push('Weather data unavailable');
+  }
+
+  // Rain alert drill-down (only when regional rain > 40%)
+  if (rainAlerts.length > 0) {
+    lines.push('');
+    lines.push('<b>\u26A0\uFE0F Rain Alert \u2014 Job-level forecast:</b>');
+    for (const alert of rainAlerts) {
+      const warn = alert.rainChance > 50 ? ' \u26A0\uFE0F' : '';
+      lines.push(`  ${alert.crewLabel} ${alert.leadName} \u2014 ${alert.city} (Job #${alert.jobNumber} ${alert.clientName}): ${alert.rainChance}% rain${warn}`);
+    }
+    const hasHighRisk = rainAlerts.some((a) => a.rainChance > 60);
+    if (hasHighRisk) {
+      lines.push('');
+      lines.push('Consider adjusting schedules for high-risk jobs.');
+    }
   }
 
   lines.push('');
@@ -201,24 +360,40 @@ export async function sendAfternoonBriefing(): Promise<void> {
     const weather = await fetchTomorrowWeather();
 
     const cache = getScheduleCache();
-    let schedules = cache.tomorrow;
+    const schedules = cache.tomorrow;
 
     if (!cache.lastSync || schedules.length === 0) {
-      // Cache not ready — send with notice
       const tomorrowLabel = getTomorrowLabel();
       const msg = weather
-        ? buildBriefingMessage(weather, [])
+        ? buildBriefingMessage(weather, [], [])
         : `\u{1F324}\uFE0F <b>Tomorrow's Briefing \u2014 ${tomorrowLabel}</b>\n\nSchedule data still loading \u2014 check crews.sunsetapp.us`;
 
+      logger.info({ event: 'afternoon_briefing_message', message: msg });
       await bot.sendMessage(GROUP_CHAT_ID, msg, { parse_mode: 'HTML' });
       logger.info({ event: 'afternoon_briefing_sent', weather: !!weather, scheduleReady: false });
       return;
     }
 
-    const message = buildBriefingMessage(weather, schedules);
+    // Fetch per-job rain alerts only when regional rain > 40%
+    let rainAlerts: JobRainAlert[] = [];
+    if (weather && weather.rainChance > 40) {
+      try {
+        rainAlerts = await fetchJobRainAlerts(schedules);
+        logger.info({ event: 'afternoon_briefing_rain_alerts', count: rainAlerts.length });
+      } catch (err) {
+        logger.warn({
+          event: 'afternoon_briefing_rain_alert_error',
+          error: err instanceof Error ? err.message : String(err),
+        });
+        // Continue without rain alerts
+      }
+    }
+
+    const message = buildBriefingMessage(weather, schedules, rainAlerts);
+    logger.info({ event: 'afternoon_briefing_message', message });
     await bot.sendMessage(GROUP_CHAT_ID, message, { parse_mode: 'HTML' });
 
-    logger.info({ event: 'afternoon_briefing_sent', weather: !!weather, scheduleReady: true });
+    logger.info({ event: 'afternoon_briefing_sent', weather: !!weather, scheduleReady: true, rainAlerts: rainAlerts.length });
   } catch (err) {
     logger.error({
       event: 'afternoon_briefing_error',
