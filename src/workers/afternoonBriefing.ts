@@ -63,7 +63,7 @@ function delay(ms: number): Promise<void> {
 // Regional weather fetch
 // ---------------------------------------------------------------------------
 
-interface WeatherData {
+export interface WeatherData {
   conditions: string;
   high: number;
   low: number;
@@ -72,7 +72,8 @@ interface WeatherData {
   windDir: string;
 }
 
-async function fetchTomorrowWeather(): Promise<WeatherData | null> {
+/** Fetch regional forecast. dayIndex 0 = today, 1 = tomorrow */
+export async function fetchRegionalForecast(dayIndex: number = 1): Promise<WeatherData | null> {
   try {
     const res = await axios.get('https://api.open-meteo.com/v1/forecast', {
       params: {
@@ -90,16 +91,17 @@ async function fetchTomorrowWeather(): Promise<WeatherData | null> {
     const daily = res.data?.daily;
     if (!daily) return null;
 
-    const weatherCode = daily.weathercode?.[1] ?? 0;
+    const idx = dayIndex === 0 ? 0 : 1;
+    const weatherCode = daily.weathercode?.[idx] ?? 0;
     const conditions = WMO_DESCRIPTIONS[weatherCode] || 'Mixed conditions';
 
     return {
       conditions,
-      high: Math.round(daily.temperature_2m_max?.[1] ?? 0),
-      low: Math.round(daily.temperature_2m_min?.[1] ?? 0),
-      rainChance: daily.precipitation_probability_max?.[1] ?? 0,
-      windSpeed: Math.round(daily.windspeed_10m_max?.[1] ?? 0),
-      windDir: windDegToDir(daily.winddirection_10m_dominant?.[1] ?? 0),
+      high: Math.round(daily.temperature_2m_max?.[idx] ?? 0),
+      low: Math.round(daily.temperature_2m_min?.[idx] ?? 0),
+      rainChance: daily.precipitation_probability_max?.[idx] ?? 0,
+      windSpeed: Math.round(daily.windspeed_10m_max?.[idx] ?? 0),
+      windDir: windDegToDir(daily.winddirection_10m_dominant?.[idx] ?? 0),
     };
   } catch (err) {
     logger.error({
@@ -179,7 +181,7 @@ interface JobRainAlert {
 }
 
 /** Fetch per-job rain forecasts for all jobs across all crews */
-async function fetchJobRainAlerts(
+export async function fetchJobRainAlerts(
   schedules: LandscapeCrewSchedule[]
 ): Promise<JobRainAlert[]> {
   // Collect unique cities from all job addresses
@@ -357,7 +359,7 @@ export async function sendAfternoonBriefing(): Promise<void> {
   try {
     logger.info({ event: 'afternoon_briefing_start' });
 
-    const weather = await fetchTomorrowWeather();
+    const weather = await fetchRegionalForecast(1);
 
     const cache = getScheduleCache();
     const schedules = cache.tomorrow;

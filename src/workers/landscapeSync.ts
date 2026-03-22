@@ -48,6 +48,9 @@ export function getScheduleCache(): ScheduleCache {
   return scheduleCache;
 }
 
+// Track job statuses across sync cycles for completion detection
+const previousJobStatuses = new Map<string, string>(); // uuid → status
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -440,6 +443,95 @@ async function syncSchedule(): Promise<void> {
     }
 
     logger.info({ event: 'landscape_sync_complete', lastSync: scheduleCache.lastSync });
+
+    // 8. Detect newly completed jobs and send notifications
+    try {
+      const isFirstRun = previousJobStatuses.size === 0;
+
+      // Also load HP crew lead UUIDs for job type detection
+      const hpLeadUuids: Record<string, string> = {};
+      for (const hpId of ['hp1', 'hp2'] as const) {
+        const val = await getConfigValue(`${hpId}_lead_uuid`);
+        if (val) hpLeadUuids[val] = hpId;
+      }
+
+      // Build combined LP + HP lookup: staff_uuid → crew label
+      const staffToCrewLabel: Record<string, { type: string; label: string; leadName: string }> = {};
+      for (const crewId of CREW_IDS) {
+        if (leadUuids[crewId]) {
+          const label = crewId.toUpperCase().replace('LP', 'LP#');
+          staffToCrewLabel[leadUuids[crewId]] = { type: 'landscape_project', label, leadName: leadNames[crewId] };
+        }
+      }
+      for (const [staffUuid, hpId] of Object.entries(hpLeadUuids)) {
+        const label = hpId.toUpperCase().replace('HP', 'HP#');
+        staffToCrewLabel[staffUuid] = { type: 'hardscape', label, leadName: staffNameMap[staffUuid] || hpId.toUpperCase() };
+      }
+
+      if (!isFirstRun) {
+        // Find jobs that were Work Order / In Progress and are now Completed
+        for (const job of allJobs) {
+          const prevStatus = previousJobStatuses.get(job.uuid);
+          if (!prevStatus) continue;
+          if (job.status !== 'Completed') continue;
+          if (prevStatus !== 'Work Order' && prevStatus !== 'In Progress') continue;
+
+          // Determine job type from first staff allocation
+          const allocations = activityMap[job.uuid] || [];
+          if (allocations.length === 0) continue;
+          const firstStaffUuid = allocations[0].staff_uuid;
+          const crewInfo = staffToCrewLabel[firstStaffUuid];
+          if (!crewInfo) continue; // Not an LP or HP crew lead — skip (mowing/maintenance)
+
+          const clientName = companyMap[job.company_uuid] || 'Unknown Client';
+          const jobNumber = job.generated_job_id || job.uuid.substring(0, 8);
+          const jobTypeLabel = crewInfo.type === 'landscape_project' ? 'Landscape Project' : 'Hardscape';
+
+          // Query subscribers for this job type
+          const subsRes = await pool.query(
+            `SELECT telegram_id FROM completion_notifications
+             WHERE active = TRUE AND $1 = ANY(job_types)`,
+            [crewInfo.type]
+          );
+
+          const message = `\u2705 Job completed: #${jobNumber} ${clientName}\nType: ${jobTypeLabel}\nCrew: ${crewInfo.label} ${crewInfo.leadName}\nAddress: ${job.job_address || 'No address'}`;
+
+          for (const row of subsRes.rows) {
+            try {
+              await bot.sendMessage(row.telegram_id, message);
+              logger.info({ event: 'completion_notification_sent', recipient: row.telegram_id, job: jobNumber });
+            } catch (err) {
+              logger.warn({
+                event: 'completion_notification_error',
+                recipient: row.telegram_id,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+
+          logger.info({
+            event: 'job_completion_detected',
+            job_uuid: job.uuid,
+            job_number: jobNumber,
+            client: clientName,
+            job_type: crewInfo.type,
+            crew: crewInfo.label,
+            subscribers: subsRes.rows.length,
+          });
+        }
+      }
+
+      // Update previous statuses for next cycle
+      previousJobStatuses.clear();
+      for (const job of allJobs) {
+        previousJobStatuses.set(job.uuid, job.status);
+      }
+    } catch (err) {
+      logger.warn({
+        event: 'completion_notification_check_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   } catch (err) {
     logger.error({
       event: 'landscape_sync_error',

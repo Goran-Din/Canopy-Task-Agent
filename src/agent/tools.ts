@@ -92,7 +92,7 @@ export const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'update_job_status',
-    description: 'Updates the status of a ServiceM8 job. IMPORTANT: Call this tool DIRECTLY when the user asks to update a job status — do NOT call get_job_status first. Pass the job number exactly as given by the user (e.g. "26") as the sm8_job_id — the tool will resolve it to the correct UUID automatically.',
+    description: 'Updates the status of a ServiceM8 job. Use when someone says mark job as done, update job to completed, job is finished, job is done, complete job #N, change job status, etc. IMPORTANT: Call this tool DIRECTLY — do NOT call get_job_status first. Pass the job number exactly as given by the user (e.g. "26") as the sm8_job_id — the tool will resolve it to the correct UUID automatically.',
     input_schema: {
       type: 'object',
       properties: {
@@ -328,6 +328,35 @@ export const toolDefinitions: Anthropic.Tool[] = [
     input_schema: {
       type: 'object',
       properties: {},
+      required: [],
+    },
+  },
+  {
+    name: 'get_job_address',
+    description: 'Look up the address, client name, and status of a job by job number. Use when someone asks for the address of a job, where a job is located, or what address job #N is at.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        job_number: {
+          type: 'string',
+          description: 'The SM8 job number e.g. "131"',
+        },
+      },
+      required: ['job_number'],
+    },
+  },
+  {
+    name: 'get_weather_forecast',
+    description: 'Get the weather forecast for the Aurora-Naperville region. Use when someone asks about tomorrow weather, will it rain, should crews go out, or what is the forecast.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        day: {
+          type: 'string',
+          enum: ['today', 'tomorrow'],
+          description: 'Which day to get the forecast for. Defaults to "tomorrow".',
+        },
+      },
       required: [],
     },
   },

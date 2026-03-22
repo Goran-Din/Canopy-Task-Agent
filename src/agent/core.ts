@@ -4,7 +4,8 @@ import { buildSystemPrompt } from './systemPrompt';
 import { toolDefinitions } from './tools';
 import { getConversationHistory, saveConversationTurn, trimConversationHistory, searchKnowledgeBase } from '../db/queries';
 import { createTask } from '../tools/vikunja';
-import { getJobStatus, updateJobStatus, createJob } from '../tools/servicem8';
+import { getJobStatus, updateJobStatus, createJob, getJobAddress } from '../tools/servicem8';
+import { getWeatherForecast } from '../tools/weather';
 import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
@@ -116,6 +117,14 @@ async function executeToolCall(
 
       case 'get_pipeline_summary': {
         return await getPipelineSummaryText();
+      }
+
+      case 'get_job_address': {
+        return await getJobAddress(toolInput.job_number as string);
+      }
+
+      case 'get_weather_forecast': {
+        return await getWeatherForecast((toolInput.day as string) || 'tomorrow');
       }
 
       case 'search_knowledge_base': {

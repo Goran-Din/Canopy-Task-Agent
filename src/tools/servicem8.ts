@@ -185,6 +185,42 @@ export async function updateJobStatus(input: UpdateJobStatusInput): Promise<{ su
   }
 }
 
+export async function getJobAddress(jobNumber: string): Promise<string> {
+  try {
+    const allJobsRes = await sm8Api.get('/job.json');
+    const allJobs = allJobsRes.data || [];
+    const job = allJobs.find((j: { generated_job_id?: string }) =>
+      j.generated_job_id === jobNumber || j.generated_job_id === String(jobNumber)
+    );
+
+    if (!job) {
+      return `Job #${jobNumber} not found in ServiceM8.`;
+    }
+
+    // Fetch client name
+    let clientName = 'Unknown Client';
+    if (job.company_uuid) {
+      try {
+        const clientRes = await sm8Api.get(`/company.json`, { params: { uuid: job.company_uuid } });
+        const client = clientRes.data?.[0];
+        if (client?.name) clientName = client.name;
+      } catch {
+        // use default
+      }
+    }
+
+    const desc = job.job_description
+      ? (job.job_description.length > 60 ? job.job_description.substring(0, 60) + '…' : job.job_description)
+      : 'No description';
+
+    return `📍 Job #${jobNumber} — ${clientName}\nAddress: ${job.job_address || 'No address on file'}\nStatus: ${job.status || 'Unknown'}\nDescription: ${desc}`;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'get_job_address_error', error: error.message });
+    return `Could not look up job #${jobNumber}: ${error.message}`;
+  }
+}
+
 export async function createJob(input: CreateJobInput): Promise<{ success: boolean; job_uuid: string; job_number: string; message: string }> {
   try {
     // Find client by name
