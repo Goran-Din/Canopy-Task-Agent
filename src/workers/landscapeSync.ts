@@ -186,6 +186,34 @@ function buildActivityMap(activities: SM8JobActivity[]): Record<string, SM8Staff
   return map;
 }
 
+/** Build map of (job_uuid:date) → sorted staff allocations, filtered to target dates.
+ *  Used by schedule logic so jobs appear on the date they're booked on the dispatch
+ *  board (activity start_date) rather than the original job.date. */
+function buildDateActivityMap(
+  activities: SM8JobActivity[],
+  targetDates: Set<string>
+): Record<string, SM8StaffAllocation[]> {
+  const map: Record<string, SM8StaffAllocation[]> = {};
+  for (const act of activities) {
+    if (act.active !== 1 || !act.activity_was_scheduled) continue;
+    const actDate = (act.start_date || '').substring(0, 10);
+    if (!targetDates.has(actDate)) continue;
+    const key = `${act.job_uuid}:${actDate}`;
+    if (!map[key]) map[key] = [];
+    map[key].push({
+      uuid: act.uuid,
+      job_uuid: act.job_uuid,
+      staff_uuid: act.staff_uuid,
+      start_time: act.start_date,
+      end_time: act.end_date,
+    });
+  }
+  for (const key of Object.keys(map)) {
+    map[key].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+  }
+  return map;
+}
+
 /** Calculate job timing from the first allocation's start/end times.
  *  All-day jobs (>= 23 hours) are normalised to 7 AM – 5 PM (10 h). */
 function calcJobTiming(
@@ -273,7 +301,7 @@ async function syncSchedule(): Promise<void> {
       leadUuids[crewId] = val;
     }
 
-    // Build reverse lookup: staff_uuid → crew_id
+    // Build reverse lookup: lead staff_uuid → crew_id
     const uuidToCrewId: Record<string, LandscapeCrewId> = {};
     for (const crewId of CREW_IDS) {
       if (leadUuids[crewId]) {
@@ -294,55 +322,62 @@ async function syncSchedule(): Promise<void> {
       leadNames[crewId] = staffNameMap[leadUuids[crewId]] || crewId.toUpperCase();
     }
 
-    // 4. Fetch all active jobs and filter for today/tomorrow + correct statuses
+    // 4. Fetch all active jobs and build lookup by UUID
     const { todayStr, tomorrowStr } = getDatesCT();
     const allJobs = await fetchAllActiveJobs();
-    const relevantJobs = allJobs.filter(
-      (j) => {
-        const jd = (j.date || '').substring(0, 10);
-        return (jd === todayStr || jd === tomorrowStr) &&
-          (j.status === 'Work Order' || j.status === 'In Progress');
+    const jobMap: Record<string, SM8Job> = {};
+    for (const j of allJobs) {
+      if (j.status === 'Work Order' || j.status === 'In Progress') {
+        jobMap[j.uuid] = j;
       }
-    );
+    }
+
+    // 5. Fetch all job activities; build date-filtered and full maps
+    const allActivities = await fetchAllJobActivities();
+    const targetDates = new Set([todayStr, tomorrowStr]);
+    const dateActMap = buildDateActivityMap(allActivities, targetDates);
+    const activityMap = buildActivityMap(allActivities);
 
     logger.info({
       event: 'landscape_sync_jobs_filtered',
       total_jobs: allJobs.length,
-      relevant_jobs: relevantJobs.length,
+      active_jobs: Object.keys(jobMap).length,
       today: todayStr,
       tomorrow: tomorrowStr,
     });
-
-    // 5. Fetch all job activities in one call, build lookup map
-    const allActivities = await fetchAllJobActivities();
-    const activityMap = buildActivityMap(allActivities);
 
     // 5b. Fetch all companies in one batch call
     const companyMap = await fetchAllCompanies();
 
     const todayCrewJobs: Record<LandscapeCrewId, LandscapeJobCard[]> = { lp1: [], lp2: [], lp3: [], lp4: [] };
     const tomorrowCrewJobs: Record<LandscapeCrewId, LandscapeJobCard[]> = { lp1: [], lp2: [], lp3: [], lp4: [] };
+    const seenJobUuids = new Set<string>();
 
-    for (const job of relevantJobs) {
+    // 6a. Primary: jobs with activities booked on target dates
+    for (const [key, allocations] of Object.entries(dateActMap)) {
+      const sepIdx = key.lastIndexOf(':');
+      const jobUuid = key.substring(0, sepIdx);
+      const activityDate = key.substring(sepIdx + 1);
+      const job = jobMap[jobUuid];
+      if (!job) continue;
+      seenJobUuids.add(jobUuid);
+
       try {
-        const allocations = activityMap[job.uuid] || [];
-        if (allocations.length === 0) continue;
+        let crewId: LandscapeCrewId | undefined;
+        for (const alloc of allocations) {
+          crewId = uuidToCrewId[alloc.staff_uuid];
+          if (crewId) break;
+        }
+        if (!crewId) continue;
 
-        const firstStaffUuid = allocations[0].staff_uuid;
-        const crewId = uuidToCrewId[firstStaffUuid];
-        if (!crewId) continue; // Not one of the 4 LP crew leads
-
-        // Resolve client name
+        const assignedCrewId = crewId;
         const clientName = companyMap[job.company_uuid] || job.job_description || 'Unknown Client';
-
-        // Build employees list
         const employees = allocations.map((a) => ({
           uuid: a.staff_uuid,
           name: staffNameMap[a.staff_uuid] || 'Unknown',
-          is_lead: a.staff_uuid === leadUuids[crewId],
+          is_lead: a.staff_uuid === leadUuids[assignedCrewId],
         }));
 
-        // Fetch comment from job_comments table
         let comment: string | null = null;
         try {
           const commentRes = await pool.query(
@@ -350,15 +385,12 @@ async function syncSchedule(): Promise<void> {
             [job.uuid]
           );
           comment = commentRes.rows[0]?.comment_text || null;
-        } catch {
-          // ignore — table may be empty
-        }
+        } catch { /* ignore */ }
 
-        // Determine job status
         let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
         if (job.status === 'In Progress') jobStatus = 'in_progress';
 
-        const timing = calcJobTiming(allocations, (job.date || '').substring(0, 10));
+        const timing = calcJobTiming(allocations, activityDate);
 
         const card: LandscapeJobCard = {
           job_uuid: job.uuid,
@@ -374,7 +406,72 @@ async function syncSchedule(): Promise<void> {
           comment,
         };
 
-        if ((job.date || '').substring(0, 10) === todayStr) {
+        if (activityDate === todayStr) {
+          todayCrewJobs[crewId].push(card);
+        } else {
+          tomorrowCrewJobs[crewId].push(card);
+        }
+      } catch (err) {
+        logger.warn({
+          event: 'landscape_sync_job_error',
+          job_uuid: jobUuid,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // 6b. Fallback: jobs where job.date matches but no activity on target dates
+    for (const job of Object.values(jobMap)) {
+      if (seenJobUuids.has(job.uuid)) continue;
+      const jd = (job.date || '').substring(0, 10);
+      if (!targetDates.has(jd)) continue;
+
+      try {
+        const allocations = activityMap[job.uuid] || [];
+        let crewId: LandscapeCrewId | undefined;
+        for (const alloc of allocations) {
+          crewId = uuidToCrewId[alloc.staff_uuid];
+          if (crewId) break;
+        }
+        if (!crewId) continue;
+
+        const assignedCrewId = crewId;
+        const clientName = companyMap[job.company_uuid] || job.job_description || 'Unknown Client';
+        const employees = allocations.map((a) => ({
+          uuid: a.staff_uuid,
+          name: staffNameMap[a.staff_uuid] || 'Unknown',
+          is_lead: a.staff_uuid === leadUuids[assignedCrewId],
+        }));
+
+        let comment: string | null = null;
+        try {
+          const commentRes = await pool.query(
+            'SELECT comment_text FROM job_comments WHERE sm8_job_uuid = $1',
+            [job.uuid]
+          );
+          comment = commentRes.rows[0]?.comment_text || null;
+        } catch { /* ignore */ }
+
+        let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
+        if (job.status === 'In Progress') jobStatus = 'in_progress';
+
+        const timing = calcJobTiming(allocations, jd);
+
+        const card: LandscapeJobCard = {
+          job_uuid: job.uuid,
+          job_number: job.generated_job_id || '',
+          client_name: clientName,
+          address: job.job_address || '',
+          description: job.job_description || '',
+          scheduled_start: timing.scheduledStart,
+          estimated_hours: timing.estimatedHours,
+          status: jobStatus,
+          employees,
+          invoice: null,
+          comment,
+        };
+
+        if (jd === todayStr) {
           todayCrewJobs[crewId].push(card);
         } else {
           tomorrowCrewJobs[crewId].push(card);
@@ -476,12 +573,15 @@ async function syncSchedule(): Promise<void> {
           if (job.status !== 'Completed') continue;
           if (prevStatus !== 'Work Order' && prevStatus !== 'In Progress') continue;
 
-          // Determine job type from first staff allocation
+          // Determine job type by scanning ALL activities for a matching crew lead
           const allocations = activityMap[job.uuid] || [];
           if (allocations.length === 0) continue;
-          const firstStaffUuid = allocations[0].staff_uuid;
-          const crewInfo = staffToCrewLabel[firstStaffUuid];
-          if (!crewInfo) continue; // Not an LP or HP crew lead — skip (mowing/maintenance)
+          let crewInfo: { type: string; label: string; leadName: string } | undefined;
+          for (const alloc of allocations) {
+            crewInfo = staffToCrewLabel[alloc.staff_uuid];
+            if (crewInfo) break;
+          }
+          if (!crewInfo) continue; // No LP or HP crew lead found — skip (mowing/maintenance)
 
           const clientName = companyMap[job.company_uuid] || 'Unknown Client';
           const jobNumber = job.generated_job_id || job.uuid.substring(0, 8);
@@ -626,27 +726,87 @@ export async function fetchScheduleForDate(dateStr: string): Promise<LandscapeCr
   for (const crewId of CREW_IDS) leadNames[crewId] = staffNameMap[leadUuids[crewId]] || crewId.toUpperCase();
 
   const allJobs = await fetchAllActiveJobs();
-  const relevantJobs = allJobs.filter(
-    (j) => (j.date || '').substring(0, 10) === dateStr && (j.status === 'Work Order' || j.status === 'In Progress')
-  );
+  const jobMap: Record<string, SM8Job> = {};
+  for (const j of allJobs) {
+    if (j.status === 'Work Order' || j.status === 'In Progress') jobMap[j.uuid] = j;
+  }
 
   const allActivities = await fetchAllJobActivities();
-  const activityMap = buildActivityMap(allActivities);
+  const dateActMap = buildDateActivityMap(allActivities, new Set([dateStr]));
+  const fullActivityMap = buildActivityMap(allActivities);
 
   const companyMap = await fetchAllCompanies();
   const crewJobs: Record<LandscapeCrewId, LandscapeJobCard[]> = { lp1: [], lp2: [], lp3: [], lp4: [] };
+  const seenJobUuids = new Set<string>();
 
-  for (const job of relevantJobs) {
+  // Primary: jobs with activities booked on dateStr
+  for (const [key, allocations] of Object.entries(dateActMap)) {
+    const jobUuid = key.substring(0, key.lastIndexOf(':'));
+    const job = jobMap[jobUuid];
+    if (!job) continue;
+    seenJobUuids.add(jobUuid);
+
     try {
-      const allocations = activityMap[job.uuid] || [];
-      if (allocations.length === 0) continue;
-      const crewId = uuidToCrewId[allocations[0].staff_uuid];
+      let crewId: LandscapeCrewId | undefined;
+      for (const alloc of allocations) {
+        crewId = uuidToCrewId[alloc.staff_uuid];
+        if (crewId) break;
+      }
       if (!crewId) continue;
 
+      const assignedCrewId = crewId;
       const employees = allocations.map((a) => ({
         uuid: a.staff_uuid,
         name: staffNameMap[a.staff_uuid] || 'Unknown',
-        is_lead: a.staff_uuid === leadUuids[crewId],
+        is_lead: a.staff_uuid === leadUuids[assignedCrewId],
+      }));
+
+      let comment: string | null = null;
+      try {
+        const commentRes = await pool.query('SELECT comment_text FROM job_comments WHERE sm8_job_uuid = $1', [job.uuid]);
+        comment = commentRes.rows[0]?.comment_text || null;
+      } catch { /* ignore */ }
+
+      let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
+      if (job.status === 'In Progress') jobStatus = 'in_progress';
+
+      const timing = calcJobTiming(allocations, dateStr);
+
+      crewJobs[crewId].push({
+        job_uuid: job.uuid,
+        job_number: job.generated_job_id || '',
+        client_name: companyMap[job.company_uuid] || job.job_description || 'Unknown Client',
+        address: job.job_address || '',
+        description: job.job_description || '',
+        scheduled_start: timing.scheduledStart,
+        estimated_hours: timing.estimatedHours,
+        status: jobStatus,
+        employees,
+        invoice: null,
+        comment,
+      });
+    } catch { /* skip job */ }
+  }
+
+  // Fallback: jobs where job.date matches but no activity on dateStr
+  for (const job of Object.values(jobMap)) {
+    if (seenJobUuids.has(job.uuid)) continue;
+    if ((job.date || '').substring(0, 10) !== dateStr) continue;
+
+    try {
+      const allocations = fullActivityMap[job.uuid] || [];
+      let crewId: LandscapeCrewId | undefined;
+      for (const alloc of allocations) {
+        crewId = uuidToCrewId[alloc.staff_uuid];
+        if (crewId) break;
+      }
+      if (!crewId) continue;
+
+      const assignedCrewId = crewId;
+      const employees = allocations.map((a) => ({
+        uuid: a.staff_uuid,
+        name: staffNameMap[a.staff_uuid] || 'Unknown',
+        is_lead: a.staff_uuid === leadUuids[assignedCrewId],
       }));
 
       let comment: string | null = null;
@@ -820,34 +980,80 @@ export async function fetchCalendarRange(
   const remainingDates = new Set(dates.filter((d) => !cachedDates.has(d)));
   if (remainingDates.size > 0) {
     const allJobs = await fetchAllActiveJobs();
-    const relevantJobs = allJobs.filter(
-      (j) =>
-        remainingDates.has((j.date || '').substring(0, 10)) &&
-        (j.status === 'Work Order' || j.status === 'In Progress')
-    );
+    const jobMap: Record<string, SM8Job> = {};
+    for (const j of allJobs) {
+      if (j.status === 'Work Order' || j.status === 'In Progress') jobMap[j.uuid] = j;
+    }
 
     const allActivities = await fetchAllJobActivities();
-    const activityMap = buildActivityMap(allActivities);
+    const dateActMap = buildDateActivityMap(allActivities, remainingDates);
+    const fullActivityMap = buildActivityMap(allActivities);
     const companyMap = await fetchAllCompanies();
+    const seenJobUuids = new Set<string>();
 
-    for (const job of relevantJobs) {
+    // Primary: jobs with activities booked on remaining dates
+    for (const [key, allocations] of Object.entries(dateActMap)) {
+      const sepIdx = key.lastIndexOf(':');
+      const jobUuid = key.substring(0, sepIdx);
+      const activityDate = key.substring(sepIdx + 1);
+      const job = jobMap[jobUuid];
+      if (!job) continue;
+      seenJobUuids.add(jobUuid);
+
       try {
-        const allocations = activityMap[job.uuid] || [];
-        if (allocations.length === 0) continue;
-        const crewId = uuidToCrewId[allocations[0].staff_uuid];
+        let crewId: LandscapeCrewId | undefined;
+        for (const alloc of allocations) {
+          crewId = uuidToCrewId[alloc.staff_uuid];
+          if (crewId) break;
+        }
         if (!crewId) continue;
 
         let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
         if (job.status === 'In Progress') jobStatus = 'in_progress';
 
-        const jobDateStr = (job.date || '').substring(0, 10);
-        const timing = calcJobTiming(allocations, jobDateStr);
+        const timing = calcJobTiming(allocations, activityDate);
 
         result[crewId].jobs.push({
           job_uuid: job.uuid,
           job_number: job.generated_job_id || '',
           client_name: companyMap[job.company_uuid] || job.job_description || 'Unknown Client',
-          date: jobDateStr,
+          date: activityDate,
+          scheduled_start: timing.scheduledStart,
+          scheduled_end: timing.scheduledEnd,
+          estimated_hours: timing.estimatedHours,
+          employee_count: allocations.length,
+          status: jobStatus,
+        });
+      } catch {
+        // skip job
+      }
+    }
+
+    // Fallback: jobs where job.date matches but no activity on remaining dates
+    for (const job of Object.values(jobMap)) {
+      if (seenJobUuids.has(job.uuid)) continue;
+      const jd = (job.date || '').substring(0, 10);
+      if (!remainingDates.has(jd)) continue;
+
+      try {
+        const allocations = fullActivityMap[job.uuid] || [];
+        let crewId: LandscapeCrewId | undefined;
+        for (const alloc of allocations) {
+          crewId = uuidToCrewId[alloc.staff_uuid];
+          if (crewId) break;
+        }
+        if (!crewId) continue;
+
+        let jobStatus: 'scheduled' | 'in_progress' | 'completed' = 'scheduled';
+        if (job.status === 'In Progress') jobStatus = 'in_progress';
+
+        const timing = calcJobTiming(allocations, jd);
+
+        result[crewId].jobs.push({
+          job_uuid: job.uuid,
+          job_number: job.generated_job_id || '',
+          client_name: companyMap[job.company_uuid] || job.job_description || 'Unknown Client',
+          date: jd,
           scheduled_start: timing.scheduledStart,
           scheduled_end: timing.scheduledEnd,
           estimated_hours: timing.estimatedHours,
