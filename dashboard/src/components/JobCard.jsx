@@ -7,19 +7,16 @@ const STATUS_COLORS = {
   completed: '#9CA3AF',
 };
 
+// SM8 times are already in America/Chicago local time.
+// Parse directly to avoid Date timezone issues.
 function formatTime(dateStr) {
   if (!dateStr) return '';
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return dateStr;
-  }
+  const m = dateStr.match(/(\d{2}):(\d{2})/);
+  if (!m) return '';
+  const h = parseInt(m[1], 10);
+  const h12 = h % 12 || 12;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h12}:${m[2]} ${ampm}`;
 }
 
 export default function JobCard({ job, crewColor }) {

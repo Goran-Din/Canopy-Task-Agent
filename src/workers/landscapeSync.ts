@@ -78,18 +78,15 @@ function getDatesCT(): { todayStr: string; tomorrowStr: string; todayLabel: stri
   return { todayStr: todayISO, tomorrowStr: tomorrowISO, todayLabel, tomorrowLabel };
 }
 
+/** Format SM8 time string (already in America/Chicago) as "7:00 AM" */
 function formatTime(dateStr: string): string {
   if (!dateStr) return '';
-  try {
-    const d = new Date(dateStr);
-    return d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return dateStr;
-  }
+  const m = dateStr.match(/(\d{2}):(\d{2})/);
+  if (!m) return dateStr;
+  const h = parseInt(m[1], 10);
+  const h12 = h % 12 || 12;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h12}:${m[2]} ${ampm}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +212,7 @@ function buildDateActivityMap(
 }
 
 /** Calculate job timing from the first allocation's start/end times.
+ *  SM8 activity times are already in America/Chicago local time.
  *  All-day jobs (>= 23 hours) are normalised to 7 AM – 5 PM (10 h). */
 function calcJobTiming(
   allocations: SM8StaffAllocation[],

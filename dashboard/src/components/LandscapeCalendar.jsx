@@ -94,39 +94,31 @@ function formatDateMobile(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-function formatTime(isoStr) {
-  if (!isoStr) return '';
-  try {
-    return new Date(isoStr.replace(' ', 'T')).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      timeZone: 'America/Chicago',
-    });
-  } catch {
-    return '';
-  }
+// SM8 times are already in America/Chicago local time ("YYYY-MM-DD HH:MM:SS").
+// Parse hours/minutes directly from the string to avoid Date timezone issues.
+function parseHM(dateStr) {
+  if (!dateStr) return null;
+  const m = dateStr.match(/(\d{2}):(\d{2})(?::(\d{2}))?/);
+  return m ? { h: parseInt(m[1], 10), m: parseInt(m[2], 10) } : null;
 }
 
-function formatTimeShort(isoStr) {
-  if (!isoStr) return '';
-  try {
-    const d = new Date(isoStr.replace(' ', 'T'));
-    const h = d.getUTCHours();
-    const m = d.getUTCMinutes();
-    return `${h}:${String(m).padStart(2, '0')}`;
-  } catch {
-    return '';
-  }
+function formatTime(dateStr) {
+  const t = parseHM(dateStr);
+  if (!t) return '';
+  const h12 = t.h % 12 || 12;
+  const ampm = t.h >= 12 ? 'PM' : 'AM';
+  return `${h12}:${String(t.m).padStart(2, '0')} ${ampm}`;
 }
 
-function parseHour(isoStr) {
-  if (!isoStr) return null;
-  try {
-    const d = new Date(isoStr.replace(' ', 'T'));
-    return d.getUTCHours() + d.getUTCMinutes() / 60;
-  } catch {
-    return null;
-  }
+function formatTimeShort(dateStr) {
+  const t = parseHM(dateStr);
+  if (!t) return '';
+  return `${t.h}:${String(t.m).padStart(2, '0')}`;
+}
+
+function parseHour(dateStr) {
+  const t = parseHM(dateStr);
+  return t ? t.h + t.m / 60 : null;
 }
 
 const STATUS_LABELS = {
