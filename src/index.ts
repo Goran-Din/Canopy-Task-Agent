@@ -8,6 +8,7 @@ import { startLandscapeSync } from './workers/landscapeSync';
 import { startInvoiceSync } from './workers/invoiceSync';
 import { startUninvoicedAlert } from './workers/uninvoicedAlert';
 import { startHardscapeSync } from './workers/hardscapeSync';
+import { startNextcloudSync } from './workers/nextcloudSync';
 import { startAfternoonBriefing } from './workers/afternoonBriefing';
 import { authMiddleware, loginRoute } from './dashboard/auth';
 import invoiceRoutes from './dashboard/invoiceRoutes';
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
   startInvoiceSync();      // every 15 min — Xero invoice cache
   startUninvoicedAlert();  // 6:30 AM CT — uninvoiced job alert
   startHardscapeSync();    // hourly — SM8 hardscape quote detect, activity sync, completion check
+  startNextcloudSync();    // hourly — auto-create Nextcloud folders for new SM8 clients
   startAfternoonBriefing(); // 6:00 PM CT — weather + crew briefing to group chat
   console.log('All workers started');
 

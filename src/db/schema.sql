@@ -59,3 +59,18 @@ CREATE TABLE IF NOT EXISTS config_store (
   expires_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Nextcloud client folders: tracks auto-created folders in Nextcloud
+CREATE TABLE IF NOT EXISTS nc_client_folders (
+  id              SERIAL PRIMARY KEY,
+  sm8_client_uuid VARCHAR(100) UNIQUE NOT NULL,
+  sm8_client_name VARCHAR(200) NOT NULL,
+  folder_path     TEXT NOT NULL,
+  public_url      TEXT,
+  share_password  VARCHAR(100),
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_nc_folders_client_uuid ON nc_client_folders(sm8_client_uuid);
+CREATE INDEX IF NOT EXISTS idx_nc_folders_client_name ON nc_client_folders(sm8_client_name);

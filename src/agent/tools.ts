@@ -361,6 +361,20 @@ export const toolDefinitions: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_client_folder',
+    description: 'Look up the Nextcloud client folder for a given client. Returns the folder URL, public share link, and password. Use when someone asks for a client folder, file share link, or where to upload files for a client.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name — partial match supported',
+        },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
     name: 'search_knowledge_base',
     description: 'Searches the company knowledge base for SOPs, policies, and procedures. Use when a team member asks about company policies, standard procedures, how to handle specific situations, or any operational question that might be documented.',
     input_schema: {

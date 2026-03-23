@@ -73,4 +73,13 @@ export const config = {
   alerts: {
     uninvoicedRecipients: process.env.UNINVOICED_ALERT_RECIPIENTS || '',
   },
+
+  nextcloud: {
+    url: process.env.NEXTCLOUD_URL || '',
+    adminUser: process.env.NEXTCLOUD_ADMIN_USER || '',
+    adminPass: process.env.NEXTCLOUD_ADMIN_PASS || '',
+    clientsRoot: process.env.NEXTCLOUD_CLIENTS_ROOT || '/Clients',
+    teamGroup: process.env.NEXTCLOUD_TEAM_GROUP || 'Back Office',
+    webdavUser: 'Goran',
+  },
 };

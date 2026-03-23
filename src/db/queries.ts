@@ -134,6 +134,24 @@ export async function searchKnowledgeBase(query: string): Promise<{ id: number; 
   return result.rows;
 }
 
+export async function getClientFolderByName(clientName: string): Promise<{
+  sm8_client_uuid: string;
+  sm8_client_name: string;
+  folder_path: string;
+  public_url: string;
+  share_password: string;
+} | null> {
+  const result = await pool.query(
+    `SELECT sm8_client_uuid, sm8_client_name, folder_path, public_url, share_password
+     FROM nc_client_folders
+     WHERE LOWER(sm8_client_name) LIKE LOWER($1)
+     ORDER BY updated_at DESC
+     LIMIT 1`,
+    [`%${clientName}%`]
+  );
+  return result.rows[0] || null;
+}
+
 export async function setConfigValue(key: string, value: string, expiresAt?: Date): Promise<void> {
   await pool.query(
     `INSERT INTO config_store (key, value, expires_at, updated_at)

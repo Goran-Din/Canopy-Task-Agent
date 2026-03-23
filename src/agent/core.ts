@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config';
 import { buildSystemPrompt } from './systemPrompt';
 import { toolDefinitions } from './tools';
-import { getConversationHistory, saveConversationTurn, trimConversationHistory, searchKnowledgeBase } from '../db/queries';
+import { getConversationHistory, saveConversationTurn, trimConversationHistory, searchKnowledgeBase, getClientFolderByName } from '../db/queries';
 import { createTask } from '../tools/vikunja';
 import { getJobStatus, updateJobStatus, createJob, getJobAddress } from '../tools/servicem8';
 import { getWeatherForecast } from '../tools/weather';
@@ -125,6 +125,21 @@ async function executeToolCall(
 
       case 'get_weather_forecast': {
         return await getWeatherForecast((toolInput.day as string) || 'tomorrow');
+      }
+
+      case 'get_client_folder': {
+        const clientName = toolInput.client_name as string;
+        const folder = await getClientFolderByName(clientName);
+        if (!folder) {
+          return JSON.stringify({ found: false, message: `No Nextcloud folder found for "${clientName}". The folder may not have been created yet — the sync runs hourly.` });
+        }
+        return JSON.stringify({
+          found: true,
+          client_name: folder.sm8_client_name,
+          folder_path: folder.folder_path,
+          public_url: folder.public_url,
+          share_password: folder.share_password,
+        });
       }
 
       case 'search_knowledge_base': {
