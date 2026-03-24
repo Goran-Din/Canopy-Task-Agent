@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { config } from './config';
+import { setConfigValue } from './db/queries';
 import { initDatabase } from './db/init';
 import { bot } from './telegram/bot';
 import { registerHandlers } from './telegram/handlers';
@@ -31,7 +32,7 @@ async function main(): Promise<void> {
   startInvoiceSync();      // every 15 min — Xero invoice cache
   startUninvoicedAlert();  // 6:30 AM CT — uninvoiced job alert
   startHardscapeSync();    // hourly — SM8 hardscape quote detect, activity sync, completion check
-  startNextcloudSync();    // hourly — auto-create Nextcloud folders for new SM8 clients
+  startNextcloudSync();      // hourly — Xero→Nextcloud folder sync
   startAfternoonBriefing(); // 6:00 PM CT — weather + crew briefing to group chat
   console.log('All workers started');
 
@@ -45,6 +46,43 @@ async function main(): Promise<void> {
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', agent: 'Canopy Task Agent', timestamp: new Date().toISOString() });
+  });
+
+  // ── Xero OAuth re-auth routes (temporary) ─────────────────────
+  app.get('/xero-reauth', (_req, res) => {
+    const scopes = 'openid profile email accounting.contacts accounting.invoices offline_access';
+    const authUrl = `https://login.xero.com/identity/connect/authorize?response_type=code&client_id=${config.xero.clientId}&redirect_uri=${encodeURIComponent(config.xero.redirectUri)}&scope=${encodeURIComponent(scopes)}&state=reauth&prompt=consent`;
+    res.redirect(authUrl);
+  });
+
+  app.get('/xero-callback', async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) { res.status(400).send('Missing code parameter'); return; }
+    try {
+      const axios = require('axios');
+      const credentials = Buffer.from(`${config.xero.clientId}:${config.xero.clientSecret}`).toString('base64');
+      const tokenRes = await axios.post(
+        'https://identity.xero.com/connect/token',
+        new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: config.xero.redirectUri }).toString(),
+        { headers: { Authorization: `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+      const { access_token, refresh_token, expires_in } = tokenRes.data;
+      const expiryDate = new Date(Date.now() + expires_in * 1000);
+      await setConfigValue('xero_access_token', access_token, expiryDate);
+      await setConfigValue('xero_refresh_token', refresh_token);
+
+      // Fetch and store tenant ID
+      const conRes = await axios.get('https://api.xero.com/connections', {
+        headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+      });
+      if (conRes.data?.[0]?.tenantId) {
+        await setConfigValue('xero_tenant_id', conRes.data[0].tenantId);
+      }
+      res.send('Xero re-auth successful. Tokens saved. You can close this tab.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).send('Xero token exchange failed: ' + msg);
+    }
   });
 
   // Serve React dashboards (no auth on static — the React apps handle login via API)

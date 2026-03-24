@@ -59,12 +59,13 @@ export async function folderExists(folderPath: string): Promise<boolean> {
   }
 }
 
-/** Create a client folder, set group share + public link, save to DB, update SM8 notes */
+/** Create a client folder, set group share + public link, save to DB */
 export async function createClientFolder(
-  sm8ClientUuid: string,
-  sm8ClientName: string
+  xeroContactId: string,
+  clientName: string,
+  sm8ClientUuid?: string
 ): Promise<{ folderPath: string; publicUrl: string; password: string }> {
-  const safeName = sanitizeFolderName(sm8ClientName);
+  const safeName = sanitizeFolderName(clientName);
   const folderPath = `${NC.clientsRoot}/${safeName}`;
 
   // 1. Ensure /Clients root exists
@@ -88,7 +89,26 @@ export async function createClientFolder(
       auth: ncAuth,
       timeout: 10000,
     });
-    logger.info({ event: 'nc_folder_created', path: folderPath, client: sm8ClientName });
+    logger.info({ event: 'nc_folder_created', path: folderPath, client: clientName });
+  }
+
+  // 2b. Create standard subfolders
+  const subfolders = ['Quotes & Agreements', 'Invoices', 'Photos', 'Permits & Renderings', 'Internal'];
+  for (const sub of subfolders) {
+    const subPath = `${folderPath}/${sub}`;
+    const subExists = await folderExists(subPath);
+    if (!subExists) {
+      try {
+        await axios({
+          method: 'MKCOL',
+          url: `${webdavBase}${subPath}`,
+          auth: ncAuth,
+          timeout: 10000,
+        });
+      } catch (err: unknown) {
+        logger.warn({ event: 'nc_subfolder_error', path: subPath, error: String(err) });
+      }
+    }
   }
 
   // 3. Share with Back Office group (shareType=1)
@@ -119,7 +139,7 @@ export async function createClientFolder(
   }
 
   // 4. Create public link with password (shareType=3)
-  const password = generateClientPassword(sm8ClientName);
+  const password = generateClientPassword(clientName);
   let publicUrl = '';
   try {
     const shareRes = await axios.post(
@@ -148,19 +168,16 @@ export async function createClientFolder(
 
   // 5. Save to database
   await pool.query(
-    `INSERT INTO nc_client_folders (sm8_client_uuid, sm8_client_name, folder_path, public_url, share_password)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (sm8_client_uuid) DO UPDATE
-       SET sm8_client_name = $2, folder_path = $3, public_url = $4, share_password = $5, updated_at = NOW()`,
-    [sm8ClientUuid, sm8ClientName, folderPath, publicUrl, password]
+    `INSERT INTO nc_client_folders (xero_contact_id, sm8_client_uuid, sm8_client_name, folder_path, public_url, share_password)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (xero_contact_id) DO UPDATE
+       SET sm8_client_name = $3, folder_path = $4, public_url = $5, share_password = $6, updated_at = NOW()`,
+    [xeroContactId, sm8ClientUuid || null, clientName, folderPath, publicUrl, password]
   );
-
-  // 6. Update SM8 client notes with folder link
-  await updateSM8ClientNotes(sm8ClientUuid, publicUrl, password);
 
   logger.info({
     event: 'nc_client_folder_ready',
-    client: sm8ClientName,
+    client: clientName,
     path: folderPath,
     publicUrl,
   });
@@ -169,7 +186,7 @@ export async function createClientFolder(
 }
 
 /** Append Nextcloud link to the SM8 company notes field */
-async function updateSM8ClientNotes(
+export async function updateSM8ClientNotes(
   companyUuid: string,
   publicUrl: string,
   password: string
@@ -215,13 +232,13 @@ async function updateSM8ClientNotes(
 
 // ── Query functions (used by Telegram bot tool) ─────────────────
 
-/** Look up a client folder by SM8 UUID */
+/** Look up a client folder by Xero contact ID */
 export async function getClientFolder(
-  sm8ClientUuid: string
+  xeroContactId: string
 ): Promise<{ folder_path: string; public_url: string; share_password: string } | null> {
   const result = await pool.query(
-    'SELECT folder_path, public_url, share_password FROM nc_client_folders WHERE sm8_client_uuid = $1',
-    [sm8ClientUuid]
+    'SELECT folder_path, public_url, share_password FROM nc_client_folders WHERE xero_contact_id = $1',
+    [xeroContactId]
   );
   return result.rows[0] || null;
 }
@@ -229,9 +246,9 @@ export async function getClientFolder(
 /** Look up a client folder by name (partial match) */
 export async function getClientFolderByName(
   clientName: string
-): Promise<{ sm8_client_uuid: string; sm8_client_name: string; folder_path: string; public_url: string; share_password: string } | null> {
+): Promise<{ xero_contact_id: string; sm8_client_name: string; folder_path: string; public_url: string; share_password: string } | null> {
   const result = await pool.query(
-    `SELECT sm8_client_uuid, sm8_client_name, folder_path, public_url, share_password
+    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password
      FROM nc_client_folders
      WHERE LOWER(sm8_client_name) LIKE LOWER($1)
      ORDER BY updated_at DESC

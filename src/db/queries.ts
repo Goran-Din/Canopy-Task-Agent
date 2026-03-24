@@ -135,14 +135,14 @@ export async function searchKnowledgeBase(query: string): Promise<{ id: number; 
 }
 
 export async function getClientFolderByName(clientName: string): Promise<{
-  sm8_client_uuid: string;
+  xero_contact_id: string;
   sm8_client_name: string;
   folder_path: string;
   public_url: string;
   share_password: string;
 } | null> {
   const result = await pool.query(
-    `SELECT sm8_client_uuid, sm8_client_name, folder_path, public_url, share_password
+    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password
      FROM nc_client_folders
      WHERE LOWER(sm8_client_name) LIKE LOWER($1)
      ORDER BY updated_at DESC
