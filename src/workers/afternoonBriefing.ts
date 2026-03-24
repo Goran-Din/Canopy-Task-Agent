@@ -396,6 +396,54 @@ export async function sendAfternoonBriefing(): Promise<void> {
     await bot.sendMessage(GROUP_CHAT_ID, message, { parse_mode: 'HTML' });
 
     logger.info({ event: 'afternoon_briefing_sent', weather: !!weather, scheduleReady: true, rainAlerts: rainAlerts.length });
+
+    // --- Overbooking alert (DM to Mark + Goran) ---
+    const OVERBOOKING_THRESHOLD = 10;
+    const overbooked: { label: string; name: string; hours: number }[] = [];
+    const available: { label: string; name: string }[] = [];
+
+    for (const crew of schedules) {
+      const label = CREW_LABELS[crew.crew_id] || crew.crew_id.toUpperCase();
+      const totalHours = crew.jobs.reduce((sum, job) => sum + (job.estimated_hours || 0), 0);
+      if (totalHours > OVERBOOKING_THRESHOLD) {
+        overbooked.push({ label, name: crew.lead_name, hours: totalHours });
+      } else if (totalHours === 0) {
+        available.push({ label, name: crew.lead_name });
+      }
+    }
+
+    if (overbooked.length > 0) {
+      const tomorrowLabel = getTomorrowLabel();
+      const alertLines: string[] = [];
+      alertLines.push(`\u26A0\uFE0F <b>Scheduling Alert \u2014 Tomorrow ${tomorrowLabel}</b>`);
+      alertLines.push('');
+      alertLines.push('The following crews need attention:');
+      alertLines.push('');
+      alertLines.push('<b>Overbooked:</b>');
+      for (const c of overbooked) {
+        alertLines.push(`  \u{1F534} ${c.label} ${c.name} \u2014 ${c.hours} hrs scheduled (limit: ${OVERBOOKING_THRESHOLD} hrs)`);
+      }
+
+      if (available.length > 0) {
+        alertLines.push('');
+        alertLines.push('<b>Available capacity:</b>');
+        for (const c of available) {
+          alertLines.push(`  \u{1F7E2} ${c.label} ${c.name} \u2014 0 hrs (no jobs scheduled)`);
+        }
+      }
+
+      alertLines.push('');
+      alertLines.push('Please review and redistribute jobs in ServiceM8 before tomorrow morning.');
+
+      const alertMessage = alertLines.join('\n');
+      await bot.sendMessage(5028364135, alertMessage, { parse_mode: 'HTML' }); // Mark Janev
+      await bot.sendMessage(1996235953, alertMessage, { parse_mode: 'HTML' }); // Goran
+      logger.info({
+        event: 'overbooking_alert_sent',
+        overbooked: overbooked.map((c) => `${c.label} ${c.name}: ${c.hours}h`),
+        available: available.map((c) => `${c.label} ${c.name}`),
+      });
+    }
   } catch (err) {
     logger.error({
       event: 'afternoon_briefing_error',
