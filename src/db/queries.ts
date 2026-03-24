@@ -140,9 +140,10 @@ export async function getClientFolderByName(clientName: string): Promise<{
   folder_path: string;
   public_url: string;
   share_password: string;
+  client_id: string | null;
 } | null> {
   const result = await pool.query(
-    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password
+    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password, client_id
      FROM nc_client_folders
      WHERE LOWER(sm8_client_name) LIKE LOWER($1)
      ORDER BY updated_at DESC

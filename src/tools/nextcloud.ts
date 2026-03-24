@@ -39,6 +39,25 @@ export function generateClientPassword(clientName: string): string {
   return firstName + suffix + '!';
 }
 
+// ── Client ID generator ─────────────────────────────────────────
+
+/** Format: S + 4-digit padded sequence + hyphen + 2-digit year. E.g. S0001-26 */
+export function generateClientId(year: number, sequence: number): string {
+  const seq = String(sequence).padStart(4, '0');
+  const yr = String(year).padStart(2, '0');
+  return `S${seq}-${yr}`;
+}
+
+/** Get next available sequence number from existing client IDs */
+export async function getNextSequence(): Promise<number> {
+  const result = await pool.query(
+    `SELECT MAX(CAST(SUBSTRING(client_id FROM 2 FOR 4) AS INTEGER)) AS max_seq
+     FROM nc_client_folders WHERE client_id IS NOT NULL`
+  );
+  const maxSeq = result.rows[0]?.max_seq;
+  return (maxSeq || 0) + 1;
+}
+
 // ── WebDAV operations ───────────────────────────────────────────
 
 /** Check if a folder exists in Nextcloud via PROPFIND */
@@ -63,10 +82,12 @@ export async function folderExists(folderPath: string): Promise<boolean> {
 export async function createClientFolder(
   xeroContactId: string,
   clientName: string,
-  sm8ClientUuid?: string
+  sm8ClientUuid?: string,
+  clientId?: string
 ): Promise<{ folderPath: string; publicUrl: string; password: string }> {
   const safeName = sanitizeFolderName(clientName);
-  const folderPath = `${NC.clientsRoot}/${safeName}`;
+  const folderName = clientId ? `${safeName} (${clientId})` : safeName;
+  const folderPath = `${NC.clientsRoot}/${folderName}`;
 
   // 1. Ensure /Clients root exists
   const rootExists = await folderExists(NC.clientsRoot);
@@ -246,9 +267,9 @@ export async function getClientFolder(
 /** Look up a client folder by name (partial match) */
 export async function getClientFolderByName(
   clientName: string
-): Promise<{ xero_contact_id: string; sm8_client_name: string; folder_path: string; public_url: string; share_password: string } | null> {
+): Promise<{ xero_contact_id: string; sm8_client_name: string; folder_path: string; public_url: string; share_password: string; client_id: string | null } | null> {
   const result = await pool.query(
-    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password
+    `SELECT xero_contact_id, sm8_client_name, folder_path, public_url, share_password, client_id
      FROM nc_client_folders
      WHERE LOWER(sm8_client_name) LIKE LOWER($1)
      ORDER BY updated_at DESC

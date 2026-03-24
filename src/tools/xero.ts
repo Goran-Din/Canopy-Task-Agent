@@ -44,6 +44,32 @@ export async function getAccessToken(): Promise<string> {
   return access_token;
 }
 
+/** Update a Xero contact's AccountNumber field */
+export async function updateXeroAccountNumber(contactId: string, accountNumber: string): Promise<boolean> {
+  try {
+    const tenantId = await getConfigValue('xero_tenant_id');
+    if (!tenantId) throw new Error('Xero tenant ID not configured.');
+
+    const token = await getAccessToken();
+
+    await axios.post(
+      `${XERO_API_URL}/Contacts`,
+      { Contacts: [{ ContactID: contactId, AccountNumber: accountNumber }] },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Xero-Tenant-Id': tenantId,
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function xeroGet(path: string, params?: Record<string, string>): Promise<{ Invoices?: XeroInvoice[] }> {
   const tenantId = await getConfigValue('xero_tenant_id');
   if (!tenantId) throw new Error('Xero tenant ID not configured.');

@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { config } from '../config';
 import { pool } from '../db/pool';
-import { getAccessToken } from '../tools/xero';
-import { createClientFolder, updateSM8ClientNotes } from '../tools/nextcloud';
+import { getAccessToken, updateXeroAccountNumber } from '../tools/xero';
+import { createClientFolder, updateSM8ClientNotes, generateClientId, getNextSequence } from '../tools/nextcloud';
 import { getConfigValue } from '../db/queries';
 import logger from '../logger';
 
@@ -174,6 +174,133 @@ async function syncNextcloudFolders(): Promise<void> {
   }
 }
 
+// ── Client ID assignment ────────────────────────────────────────
+
+async function fetchXeroCustomersOrdered(): Promise<Array<{ id: string; name: string }>> {
+  const token = await getAccessToken();
+  const tenantId = await getConfigValue('xero_tenant_id');
+  if (!tenantId) throw new Error('Xero tenant ID not configured.');
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'Xero-Tenant-Id': tenantId,
+    Accept: 'application/json',
+  };
+
+  const customers: Array<{ id: string; name: string }> = [];
+  let page = 1;
+
+  while (true) {
+    const res = await axios.get(`${XERO_API_URL}/Contacts`, {
+      headers,
+      params: { page, order: 'UpdatedDateUTC ASC' },
+      timeout: 15000,
+    });
+
+    const contacts: Array<{ ContactID: string; Name: string; IsCustomer: boolean }> =
+      res.data?.Contacts || [];
+
+    if (contacts.length === 0) break;
+
+    for (const c of contacts) {
+      if (c.IsCustomer === true) {
+        customers.push({ id: c.ContactID, name: c.Name });
+      }
+    }
+
+    if (contacts.length < 100) break;
+    page++;
+  }
+
+  return customers;
+}
+
+async function assignClientIds(): Promise<void> {
+  try {
+    // Step 1: Fetch all Xero customers ordered by UpdatedDateUTC ASC
+    const customers = await fetchXeroCustomersOrdered();
+    logger.info({ event: 'client_id_assign_start', total_customers: customers.length });
+
+    // Step 2: Build map of existing records
+    const existing = await pool.query(
+      'SELECT xero_contact_id, client_id, xero_id_updated FROM nc_client_folders'
+    );
+    const dbMap = new Map<string, { client_id: string | null; xero_id_updated: boolean }>();
+    for (const row of existing.rows) {
+      dbMap.set(row.xero_contact_id, {
+        client_id: row.client_id,
+        xero_id_updated: row.xero_id_updated,
+      });
+    }
+
+    // Step 3: Assign IDs and update Xero
+    let sequence = await getNextSequence();
+    const year = new Date().getFullYear() % 100; // 26 for 2026
+    let assigned = 0;
+    let xeroUpdated = 0;
+    let retried = 0;
+    let errors = 0;
+
+    for (const customer of customers) {
+      const record = dbMap.get(customer.id);
+
+      // No DB record yet — skip (folder not created yet)
+      if (!record) continue;
+
+      // Already fully done
+      if (record.client_id && record.xero_id_updated) continue;
+
+      try {
+        let clientId = record.client_id;
+
+        // Assign new client ID if needed
+        if (!clientId) {
+          clientId = generateClientId(year, sequence++);
+          await pool.query(
+            'UPDATE nc_client_folders SET client_id = $1 WHERE xero_contact_id = $2',
+            [clientId, customer.id]
+          );
+          assigned++;
+        } else {
+          retried++;
+        }
+
+        // Update Xero AccountNumber
+        const success = await updateXeroAccountNumber(customer.id, clientId);
+        if (success) {
+          await pool.query(
+            'UPDATE nc_client_folders SET xero_id_updated = TRUE WHERE xero_contact_id = $1',
+            [customer.id]
+          );
+          xeroUpdated++;
+        }
+
+        // Log progress every 25 clients
+        if ((assigned + retried) % 25 === 0 && (assigned + retried) > 0) {
+          logger.info({ event: 'client_id_progress', assigned, xeroUpdated, retried });
+        }
+
+        // 200ms rate limit
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      } catch (err) {
+        errors++;
+        logger.warn({
+          event: 'client_id_assign_error',
+          customer: customer.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    logger.info({ event: 'client_id_assign_done', assigned, xeroUpdated, retried, errors });
+  } catch (err) {
+    logger.error({
+      event: 'client_id_assign_error',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── Exports ─────────────────────────────────────────────────────
 
 /** Manual trigger — used by `docker exec` one-off calls */
@@ -189,11 +316,20 @@ export function startNextcloudSync(): void {
     );
   }, 30_000);
 
-  // Then every hour
-  setInterval(() => {
-    syncNextcloudFolders().catch((err) =>
-      logger.error({ event: 'nc_sync_interval_error', error: String(err) })
+  // Run client ID assignment after 60 seconds
+  setTimeout(() => {
+    assignClientIds().catch((err) =>
+      logger.error({ event: 'client_id_initial_error', error: String(err) })
     );
+  }, 60_000);
+
+  // Then every hour: folder sync + client ID assignment
+  setInterval(() => {
+    syncNextcloudFolders()
+      .then(() => assignClientIds())
+      .catch((err) =>
+        logger.error({ event: 'nc_sync_interval_error', error: String(err) })
+      );
   }, SYNC_INTERVAL);
 
   logger.info({ event: 'nc_sync_scheduled', interval_ms: SYNC_INTERVAL });

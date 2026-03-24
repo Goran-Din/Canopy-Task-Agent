@@ -136,6 +136,7 @@ async function executeToolCall(
         return JSON.stringify({
           found: true,
           client_name: folder.sm8_client_name,
+          client_id: folder.client_id || null,
           folder_path: folder.folder_path,
           public_url: folder.public_url,
           share_password: folder.share_password,
