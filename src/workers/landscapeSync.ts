@@ -418,7 +418,9 @@ async function syncSchedule(): Promise<void> {
       }
     }
 
-    // 6b. Fallback: jobs where job.date matches but no activity on target dates
+    // 6b. Fallback: jobs where job.date matches but no activity on target dates.
+    //     Only include jobs that have NO scheduled activities at all — jobs with
+    //     activities on other dates will appear on the correct day via the primary path.
     for (const job of Object.values(jobMap)) {
       if (seenJobUuids.has(job.uuid)) continue;
       const jd = (job.date || '').substring(0, 10);
@@ -426,6 +428,7 @@ async function syncSchedule(): Promise<void> {
 
       try {
         const allocations = activityMap[job.uuid] || [];
+        if (allocations.length > 0) continue; // has activities on other dates — skip
         let crewId: LandscapeCrewId | undefined;
         for (const alloc of allocations) {
           crewId = uuidToCrewId[alloc.staff_uuid];
@@ -786,13 +789,16 @@ export async function fetchScheduleForDate(dateStr: string): Promise<LandscapeCr
     } catch { /* skip job */ }
   }
 
-  // Fallback: jobs where job.date matches but no activity on dateStr
+  // Fallback: jobs where job.date matches but no activity on dateStr.
+  // Only include jobs with NO scheduled activities — jobs with activities on other
+  // dates will appear on the correct day via the primary path.
   for (const job of Object.values(jobMap)) {
     if (seenJobUuids.has(job.uuid)) continue;
     if ((job.date || '').substring(0, 10) !== dateStr) continue;
 
     try {
       const allocations = fullActivityMap[job.uuid] || [];
+      if (allocations.length > 0) continue; // has activities on other dates — skip
       let crewId: LandscapeCrewId | undefined;
       for (const alloc of allocations) {
         crewId = uuidToCrewId[alloc.staff_uuid];
@@ -1027,7 +1033,9 @@ export async function fetchCalendarRange(
       }
     }
 
-    // Fallback: jobs where job.date matches but no activity on remaining dates
+    // Fallback: jobs where job.date matches but no activity on remaining dates.
+    // Only include jobs with NO scheduled activities — jobs with activities on other
+    // dates will appear on the correct day via the primary path.
     for (const job of Object.values(jobMap)) {
       if (seenJobUuids.has(job.uuid)) continue;
       const jd = (job.date || '').substring(0, 10);
@@ -1035,6 +1043,7 @@ export async function fetchCalendarRange(
 
       try {
         const allocations = fullActivityMap[job.uuid] || [];
+        if (allocations.length > 0) continue; // has activities on other dates — skip
         let crewId: LandscapeCrewId | undefined;
         for (const alloc of allocations) {
           crewId = uuidToCrewId[alloc.staff_uuid];
