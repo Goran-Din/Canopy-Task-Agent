@@ -13,6 +13,7 @@ services:
       - agent-network
     volumes:
       - agent_logs:/app/logs
+      - ./config:/app/config:ro
 
   db:
     image: postgres:16-alpine

@@ -1,8 +1,10 @@
 import axios from 'axios';
+import cron from 'node-cron';
 import { config } from '../config';
 import { pool } from '../db/pool';
 import { getAccessToken, updateXeroAccountNumber } from '../tools/xero';
 import { createClientFolder, updateSM8ClientNotes, generateClientId, getNextSequence } from '../tools/nextcloud';
+import { syncClientDirectoryToSheet } from '../tools/googleSheets';
 import { getConfigValue } from '../db/queries';
 import logger from '../logger';
 
@@ -141,7 +143,12 @@ async function syncNextcloudFolders(): Promise<void> {
       logger.info({ event: 'nc_sync_done', new_folders: created, errors });
     }
 
-    // Step 4: Retry SM8 note updates for folders that failed previously
+    // Step 4: Sync client directory to Google Sheets
+    await syncClientDirectoryToSheet().catch((e) =>
+      logger.error({ event: 'sheets_sync_error', error: e instanceof Error ? e.message : String(e) })
+    );
+
+    // Step 5: Retry SM8 note updates for folders that failed previously
     const pendingNotes = await pool.query(
       `SELECT xero_contact_id, sm8_client_name, public_url, share_password
        FROM nc_client_folders
@@ -331,6 +338,13 @@ export function startNextcloudSync(): void {
         logger.error({ event: 'nc_sync_interval_error', error: String(err) })
       );
   }, SYNC_INTERVAL);
+
+  // Daily 6 AM CT — full Google Sheets refresh
+  cron.schedule('0 6 * * *', () => {
+    syncClientDirectoryToSheet().catch((err) =>
+      logger.error({ event: 'sheets_daily_sync_error', error: String(err) })
+    );
+  }, { timezone: 'America/Chicago' });
 
   logger.info({ event: 'nc_sync_scheduled', interval_ms: SYNC_INTERVAL });
 }
