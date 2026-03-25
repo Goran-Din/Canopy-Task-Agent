@@ -137,7 +137,7 @@ export async function createDepositInvoice(params: {
       AccountCode: accountCode,
     })),
     {
-      Description: `Project Deposit ${params.depositPercent}% — ${params.contactName} Job #${params.jobNumber}`,
+      Description: `Project Deposit \u2013 ${params.depositPercent}% (Project Quote Job#${params.jobNumber} Total Amount $${params.totalProjectAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`,
       UnitAmount: params.depositAmount,
       Quantity: 1,
       AccountCode: accountCode,
@@ -150,22 +150,20 @@ export async function createDepositInvoice(params: {
     : Date.now() + 7 * 86400000;
   const dueDateXero = `/Date(${dueMs})/`;
 
-  const invoiceNotes = `Total Project Value: $${params.totalProjectAmount.toFixed(2)}
+  const remaining = params.totalProjectAmount - params.depositAmount;
+  const fmtTotal = params.totalProjectAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtDeposit = params.depositAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtRemaining = remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-Payment Terms:
-${params.paymentTerms}
-
-This invoice covers the ${params.depositPercent}% deposit ($${params.depositAmount.toFixed(2)}).
-Remaining balance: $${(params.totalProjectAmount - params.depositAmount).toFixed(2)}
-
-Please contact us with any questions regarding this invoice.`;
+  const invoiceNotes = `Total Project Value: $${fmtTotal}\n\nPayment Terms: ${params.paymentTerms}\n\nThis invoice covers the ${params.depositPercent}% deposit ($${fmtDeposit}).\nRemaining balance due on completion: $${fmtRemaining}`;
 
   const body = {
     Invoices: [{
       Type: 'ACCREC',
       Contact: { ContactID: params.xeroContactId },
       Status: 'DRAFT',
-      Reference: `Job #${params.jobNumber} — Deposit ${params.depositPercent}%`,
+      Reference: `Job #${params.jobNumber} \u2014 Deposit ${params.depositPercent}%`,
+      Narration: invoiceNotes,
       LineAmountTypes: 'Exclusive',
       DueDate: dueDateXero,
       LineItems: xeroLineItems,

@@ -308,42 +308,50 @@ export async function getXeroContactForSM8Job(
     const { getAccessToken } = await import('./xero');
     const { getConfigValue } = await import('../db/queries');
 
-    // Step 0: Look up nc_client_folders by sm8_client_uuid (most reliable)
-    // Fetch the fresh company name from SM8 API, then find by UUID in our DB
-    let freshClientName = sm8ClientName;
-    if (!freshClientName && companyUuid) {
+    // Step 0: Fetch fresh company name from SM8 API
+    let freshClientName: string | undefined;
+    if (companyUuid) {
       try {
-        const clientRes = await sm8Api.get(`/company/${companyUuid}.json`);
+        const clientRes = await sm8Api.get(`/client/${companyUuid}.json`);
         freshClientName = clientRes.data?.name;
-      } catch { /* continue */ }
+      } catch {
+        // Fallback to /company endpoint
+        try {
+          const clientRes = await sm8Api.get(`/company/${companyUuid}.json`);
+          freshClientName = clientRes.data?.name;
+        } catch { /* continue */ }
+      }
     }
+    if (!freshClientName) freshClientName = sm8ClientName;
 
-    const uuidRes = await pool.query(
-      `SELECT xero_contact_id, client_id, sm8_client_name
-       FROM nc_client_folders
-       WHERE sm8_client_uuid = $1
-       LIMIT 1`,
-      [companyUuid]
-    );
-
-    if (uuidRes.rows.length > 0 && uuidRes.rows[0].xero_contact_id) {
-      const row = uuidRes.rows[0];
-      const contactName = row.sm8_client_name || freshClientName || 'Unknown';
-      logger.info({ event: 'xero_contact_found', method: 'db_uuid_lookup', name: contactName, clientId: row.client_id, xeroContactId: row.xero_contact_id });
-      return { contactId: row.xero_contact_id, name: contactName, clientId: row.client_id || null };
-    }
-
-    // Step 1: Search nc_client_folders by name (ILIKE) using fresh SM8 company name
+    // Step 1: Search nc_client_folders by sm8_client_name ILIKE or sm8_client_uuid
     const clientName = freshClientName;
     if (!clientName) return null;
 
-    const nameRes = await pool.query(
+    // Try exact ILIKE first, then by UUID, then by first/last name words
+    let nameRes = await pool.query(
       `SELECT xero_contact_id, client_id, sm8_client_name
        FROM nc_client_folders
-       WHERE sm8_client_name ILIKE $1
+       WHERE sm8_client_name ILIKE $1 OR sm8_client_uuid = $2
        LIMIT 1`,
-      [`%${clientName}%`]
+      [`%${clientName}%`, companyUuid]
     );
+
+    // If no match, try matching by individual name words (e.g. "Jason Woolsey" → "Jason & Jennifer Woolsey")
+    if (nameRes.rows.length === 0) {
+      const words = clientName.split(/\s+/).filter(w => w.length >= 3);
+      if (words.length >= 2) {
+        const conditions = words.map((_w: string, i: number) => `sm8_client_name ILIKE $${i + 1}`).join(' AND ');
+        const params = words.map((w: string) => `%${w}%`);
+        nameRes = await pool.query(
+          `SELECT xero_contact_id, client_id, sm8_client_name
+           FROM nc_client_folders
+           WHERE ${conditions}
+           LIMIT 1`,
+          params
+        );
+      }
+    }
 
     if (nameRes.rows.length > 0 && nameRes.rows[0].xero_contact_id) {
       const row = nameRes.rows[0];
@@ -353,7 +361,7 @@ export async function getXeroContactForSM8Job(
     }
 
     // Step 2: Search Xero by AccountNumber if we have a client_id from DB
-    const dbRow = uuidRes.rows[0] || nameRes.rows[0];
+    const dbRow = nameRes.rows[0];
     const token = await getAccessToken();
     const tenantId = await getConfigValue('xero_tenant_id');
     if (!tenantId) return null;
