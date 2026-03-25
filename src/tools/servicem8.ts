@@ -248,12 +248,12 @@ export async function getJobQuoteDetails(jobNumberOrUuid: string): Promise<{
     );
     if (!job) return null;
 
-    // Fetch client name
+    // Fetch client name fresh from SM8 API (not cached)
     let clientName = 'Unknown Client';
     if (job.company_uuid) {
       try {
-        const clientRes = await sm8Api.get('/company.json', { params: { uuid: job.company_uuid } });
-        const client = clientRes.data?.[0];
+        const clientRes = await sm8Api.get(`/company/${job.company_uuid}.json`);
+        const client = clientRes.data;
         if (client?.name) clientName = client.name;
       } catch { /* use default */ }
     }
@@ -308,59 +308,58 @@ export async function getXeroContactForSM8Job(
     const { getAccessToken } = await import('./xero');
     const { getConfigValue } = await import('../db/queries');
 
-    // Step 1: Get SM8 client name if not provided
-    let clientName = sm8ClientName;
-    if (!clientName) {
-      const clientRes = await sm8Api.get(`/company/${companyUuid}.json`);
-      clientName = clientRes.data?.name;
+    // Step 0: Look up nc_client_folders by sm8_client_uuid (most reliable)
+    // Fetch the fresh company name from SM8 API, then find by UUID in our DB
+    let freshClientName = sm8ClientName;
+    if (!freshClientName && companyUuid) {
+      try {
+        const clientRes = await sm8Api.get(`/company/${companyUuid}.json`);
+        freshClientName = clientRes.data?.name;
+      } catch { /* continue */ }
     }
+
+    const uuidRes = await pool.query(
+      `SELECT xero_contact_id, client_id, sm8_client_name
+       FROM nc_client_folders
+       WHERE sm8_client_uuid = $1
+       LIMIT 1`,
+      [companyUuid]
+    );
+
+    if (uuidRes.rows.length > 0 && uuidRes.rows[0].xero_contact_id) {
+      const row = uuidRes.rows[0];
+      const contactName = row.sm8_client_name || freshClientName || 'Unknown';
+      logger.info({ event: 'xero_contact_found', method: 'db_uuid_lookup', name: contactName, clientId: row.client_id, xeroContactId: row.xero_contact_id });
+      return { contactId: row.xero_contact_id, name: contactName, clientId: row.client_id || null };
+    }
+
+    // Step 1: Search nc_client_folders by name (ILIKE) using fresh SM8 company name
+    const clientName = freshClientName;
     if (!clientName) return null;
 
-    // Step 2: Check nc_client_folders for a direct xero_contact_id match
-    const dbRes = await pool.query(
+    const nameRes = await pool.query(
       `SELECT xero_contact_id, client_id, sm8_client_name
        FROM nc_client_folders
        WHERE sm8_client_name ILIKE $1
        LIMIT 1`,
-      [clientName]
+      [`%${clientName}%`]
     );
 
-    if (dbRes.rows.length > 0 && dbRes.rows[0].xero_contact_id) {
-      const row = dbRes.rows[0];
-      // Fetch the Xero contact name using the stored ID
-      const token = await getAccessToken();
-      const tenantId = await getConfigValue('xero_tenant_id');
-      if (tenantId) {
-        try {
-          const xeroRes = await axios.get(
-            `https://api.xero.com/api.xro/2.0/Contacts/${row.xero_contact_id}`,
-            {
-              headers: {
-                Authorization: `Bearer ${token}`,
-                'Xero-Tenant-Id': tenantId,
-                Accept: 'application/json',
-              },
-              timeout: 10000,
-            }
-          );
-          const contact = xeroRes.data?.Contacts?.[0];
-          if (contact) {
-            logger.info({ event: 'xero_contact_found', method: 'db_lookup', name: contact.Name, clientId: row.client_id });
-            return { contactId: contact.ContactID, name: contact.Name, clientId: row.client_id || null };
-          }
-        } catch {
-          logger.warn({ event: 'xero_contact_db_fetch_failed', xeroContactId: row.xero_contact_id });
-        }
-      }
+    if (nameRes.rows.length > 0 && nameRes.rows[0].xero_contact_id) {
+      const row = nameRes.rows[0];
+      const contactName = row.sm8_client_name || clientName;
+      logger.info({ event: 'xero_contact_found', method: 'db_name_lookup', name: contactName, clientId: row.client_id, xeroContactId: row.xero_contact_id });
+      return { contactId: row.xero_contact_id, name: contactName, clientId: row.client_id || null };
     }
 
-    // Step 3: Search Xero by AccountNumber if we have a client_id
+    // Step 2: Search Xero by AccountNumber if we have a client_id from DB
+    const dbRow = uuidRes.rows[0] || nameRes.rows[0];
     const token = await getAccessToken();
     const tenantId = await getConfigValue('xero_tenant_id');
     if (!tenantId) return null;
 
-    if (dbRes.rows.length > 0 && dbRes.rows[0].client_id) {
-      const clientId = dbRes.rows[0].client_id;
+    if (dbRow?.client_id) {
+      const clientId = dbRow.client_id;
       try {
         const xeroRes = await axios.get('https://api.xero.com/api.xro/2.0/Contacts', {
           headers: {
@@ -381,7 +380,7 @@ export async function getXeroContactForSM8Job(
       }
     }
 
-    // Step 4: Fallback — search Xero by name
+    // Step 3: Fallback — search Xero by name
     try {
       const safeName = clientName.replace(/"/g, '').replace(/'/g, '');
       const xeroRes = await axios.get('https://api.xero.com/api.xro/2.0/Contacts', {

@@ -66,9 +66,23 @@ export async function handleDepositInvoiceRequest(
       return 'Job not found in ServiceM8. Please check the job number and try again.';
     }
 
-    const contact = await getXeroContactForSM8Job(job.companyUuid, job.clientName);
+    let contact = await getXeroContactForSM8Job(job.companyUuid, job.clientName);
     if (!contact) {
-      return `Client not found in Xero for job #${job.jobNumber} (${job.clientName}). Please add them to Xero first.`;
+      // Fallback: check nc_client_folders directly for xero_contact_id
+      const dbFallback = await pool.query(
+        `SELECT xero_contact_id, client_id, sm8_client_name
+         FROM nc_client_folders
+         WHERE sm8_client_uuid = $1 OR sm8_client_name ILIKE $2
+         LIMIT 1`,
+        [job.companyUuid, `%${job.clientName}%`]
+      );
+      if (dbFallback.rows.length > 0 && dbFallback.rows[0].xero_contact_id) {
+        const row = dbFallback.rows[0];
+        contact = { contactId: row.xero_contact_id, name: row.sm8_client_name || job.clientName, clientId: row.client_id || null };
+        logger.info({ event: 'deposit_contact_db_fallback', name: contact.name, clientId: contact.clientId });
+      } else {
+        return `Client not found in Xero for job #${job.jobNumber} (${job.clientName}). Please add them to Xero first.`;
+      }
     }
 
     const firstPaymentPercent = extractFirstPaymentPercent(job.description) || 30;
