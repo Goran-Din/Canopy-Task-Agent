@@ -11,6 +11,7 @@ import { startUninvoicedAlert } from './workers/uninvoicedAlert';
 import { startHardscapeSync } from './workers/hardscapeSync';
 import { startNextcloudSync } from './workers/nextcloudSync';
 import { startAfternoonBriefing } from './workers/afternoonBriefing';
+import { startDepositPaymentSync } from './workers/depositPaymentSync';
 import { authMiddleware, loginRoute } from './dashboard/auth';
 import invoiceRoutes from './dashboard/invoiceRoutes';
 import commentRoutes from './dashboard/commentRoutes';
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   startHardscapeSync();    // hourly — SM8 hardscape quote detect, activity sync, completion check
   startNextcloudSync();      // hourly — Xero→Nextcloud folder sync
   startAfternoonBriefing(); // 6:00 PM CT — weather + crew briefing to group chat
+  startDepositPaymentSync(); // hourly — check Xero for deposit payments
   console.log('All workers started');
 
   const app = express();

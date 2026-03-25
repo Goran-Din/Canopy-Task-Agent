@@ -105,6 +105,93 @@ function formatInvoice(inv: XeroInvoice): string {
   return `${inv.InvoiceNumber} · ${inv.Contact?.Name || 'Unknown'} · ${inv.Total.toFixed(2)} · ${status}${due}`;
 }
 
+// ---------------------------------------------------------------------------
+// Deposit invoice creation
+// ---------------------------------------------------------------------------
+
+export async function createDepositInvoice(params: {
+  xeroContactId: string;
+  contactName: string;
+  jobNumber: string;
+  sm8JobUuid?: string;
+  lineItems: Array<{ description: string; unitAmount: number }>;
+  depositAmount: number;
+  depositPercent: number;
+  totalProjectAmount: number;
+  paymentTerms: string;
+  projectType: 'hardscape' | 'landscape';
+  dueDate?: string;
+}): Promise<{ invoiceId: string; invoiceNumber: string }> {
+  const tenantId = await getConfigValue('xero_tenant_id');
+  if (!tenantId) throw new Error('Xero tenant ID not configured.');
+  const token = await getAccessToken();
+
+  const accountCode = params.projectType === 'hardscape' ? '4230' : '4220';
+
+  // Build line items: original items as zero-quantity context lines + deposit line
+  const xeroLineItems = [
+    ...params.lineItems.map((li) => ({
+      Description: li.description,
+      UnitAmount: li.unitAmount,
+      Quantity: 0,
+      AccountCode: accountCode,
+    })),
+    {
+      Description: `Project Deposit ${params.depositPercent}% — ${params.contactName} Job #${params.jobNumber}`,
+      UnitAmount: params.depositAmount,
+      Quantity: 1,
+      AccountCode: accountCode,
+    },
+  ];
+
+  // Default due date: 7 days from now
+  const dueMs = params.dueDate
+    ? new Date(params.dueDate).getTime()
+    : Date.now() + 7 * 86400000;
+  const dueDateXero = `/Date(${dueMs})/`;
+
+  const invoiceNotes = `Total Project Value: $${params.totalProjectAmount.toFixed(2)}
+
+Payment Terms:
+${params.paymentTerms}
+
+This invoice covers the ${params.depositPercent}% deposit ($${params.depositAmount.toFixed(2)}).
+Remaining balance: $${(params.totalProjectAmount - params.depositAmount).toFixed(2)}
+
+Please contact us with any questions regarding this invoice.`;
+
+  const body = {
+    Invoices: [{
+      Type: 'ACCREC',
+      Contact: { ContactID: params.xeroContactId },
+      Status: 'DRAFT',
+      Reference: `Job #${params.jobNumber} — Deposit ${params.depositPercent}%`,
+      LineAmountTypes: 'Exclusive',
+      DueDate: dueDateXero,
+      LineItems: xeroLineItems,
+      ...(params.sm8JobUuid ? { Url: `https://go.servicem8.com/#job,${params.sm8JobUuid}` } : {}),
+    }],
+  };
+
+  const response = await axios.post(`${XERO_API_URL}/Invoices`, body, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Xero-Tenant-Id': tenantId,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    timeout: 15000,
+  });
+
+  const created = response.data?.Invoices?.[0];
+  if (!created?.InvoiceID) throw new Error('Xero did not return an invoice ID.');
+
+  return {
+    invoiceId: created.InvoiceID,
+    invoiceNumber: created.InvoiceNumber || 'DRAFT',
+  };
+}
+
 export async function queryXeroInvoices(input: XeroQueryInput): Promise<{ result: string }> {
   switch (input.query_type) {
     case 'invoice_status': {

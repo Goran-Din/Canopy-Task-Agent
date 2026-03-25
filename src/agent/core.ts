@@ -11,6 +11,7 @@ import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
 import { getScheduleCache } from '../workers/landscapeSync';
 import { createProspect, updateProspectStage, assignCrew, delayCrewJobs, getPipelineSummaryText } from '../tools/hardscape';
+import { handleDepositInvoiceRequest, confirmDepositInvoice, hasPendingDeposit } from '../tools/depositInvoice';
 import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId, CreateProspectInput, UpdateProspectStageInput, AssignCrewInput, DelayCrewJobsInput } from '../types';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
@@ -143,6 +144,11 @@ async function executeToolCall(
         });
       }
 
+      case 'create_deposit_invoice': {
+        const jobId = toolInput.job_identifier as string;
+        return await handleDepositInvoiceRequest(user.telegram_id, jobId);
+      }
+
       case 'search_knowledge_base': {
         const query = toolInput.query as string;
         const results = await searchKnowledgeBase(query);
@@ -201,6 +207,23 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
     await saveConversationTurn(user.telegram_id, 'assistant', reply);
     await trimConversationHistory(user.telegram_id);
     return reply;
+  }
+
+  // Deposit invoice confirmation shortcuts
+  if (hasPendingDeposit(user.telegram_id)) {
+    if (/^yes$/i.test(userMessage.trim())) {
+      const reply = await confirmDepositInvoice(user.telegram_id);
+      await saveConversationTurn(user.telegram_id, 'assistant', reply);
+      await trimConversationHistory(user.telegram_id);
+      return reply;
+    }
+    const pctMatch = userMessage.trim().match(/^(\d{1,3})%$/);
+    if (pctMatch) {
+      const reply = await confirmDepositInvoice(user.telegram_id, parseInt(pctMatch[1], 10));
+      await saveConversationTurn(user.telegram_id, 'assistant', reply);
+      await trimConversationHistory(user.telegram_id);
+      return reply;
+    }
   }
 
   const currentDate = new Date().toLocaleDateString('en-US', {

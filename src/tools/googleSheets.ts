@@ -98,6 +98,174 @@ export async function createOrGetSheet(): Promise<string> {
   return spreadsheetId;
 }
 
+// ── Deposit Tracker Sheets ──────────────────────────────────────
+
+const TRACKER_HEADERS = [
+  'Client', 'Job #', 'Total Project', 'Deposit Inv #', 'Deposit Amt', 'Deposit Paid',
+  'Payment 2 Inv #', 'Payment 2 Amt', 'Payment 2 Paid',
+  'Final Inv #', 'Final Amt', 'Final Paid', 'Balance Due', 'Status',
+];
+
+export async function createOrGetDepositTrackerSheets(): Promise<{ hardscapeId: string; landscapeId: string }> {
+  const auth = getAuth();
+  const drive = google.drive({ version: 'v3', auth });
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  async function ensureSheet(configKey: string, sheetTitle: string): Promise<string> {
+    const existing = await getConfigValue(configKey);
+    if (existing) return existing;
+
+    const file = await drive.files.create({
+      requestBody: {
+        name: sheetTitle,
+        mimeType: 'application/vnd.google-apps.spreadsheet',
+        parents: [FOLDER_ID],
+      },
+      supportsAllDrives: true,
+      fields: 'id',
+    });
+    const spreadsheetId = file.data.id!;
+
+    // Format header: bold, dark green bg, white text, frozen row
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            updateSheetProperties: {
+              properties: {
+                sheetId: 0,
+                title: 'Tracker',
+                gridProperties: { frozenRowCount: 1 },
+              },
+              fields: 'title,gridProperties.frozenRowCount',
+            },
+          },
+          {
+            repeatCell: {
+              range: { sheetId: 0, startRowIndex: 0, endRowIndex: 1 },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+                  backgroundColor: { red: 0.13, green: 0.33, blue: 0.24 },
+                },
+              },
+              fields: 'userEnteredFormat',
+            },
+          },
+        ],
+      },
+    });
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: 'Tracker!A1:N1',
+      valueInputOption: 'RAW',
+      requestBody: { values: [TRACKER_HEADERS] },
+    });
+
+    await setConfigValue(configKey, spreadsheetId);
+    logger.info({ event: 'deposit_tracker_sheet_created', configKey, spreadsheetId });
+    return spreadsheetId;
+  }
+
+  const hardscapeId = await ensureSheet(
+    'google_sheets_hardscape_tracker_id',
+    'Hardscape Project Deposit Tracker'
+  );
+  const landscapeId = await ensureSheet(
+    'google_sheets_landscape_tracker_id',
+    'Landscape Project Deposit Tracker'
+  );
+
+  return { hardscapeId, landscapeId };
+}
+
+export async function syncDepositTrackerToSheet(projectType: 'hardscape' | 'landscape'): Promise<void> {
+  const configKey = projectType === 'hardscape'
+    ? 'google_sheets_hardscape_tracker_id'
+    : 'google_sheets_landscape_tracker_id';
+
+  let spreadsheetId = await getConfigValue(configKey);
+  if (!spreadsheetId) {
+    const ids = await createOrGetDepositTrackerSheets();
+    spreadsheetId = projectType === 'hardscape' ? ids.hardscapeId : ids.landscapeId;
+  }
+
+  const sheets = google.sheets({ version: 'v4', auth: getAuth() });
+
+  const result = await pool.query(
+    `SELECT * FROM deposit_tracker WHERE project_type = $1 ORDER BY created_at ASC`,
+    [projectType]
+  );
+
+  const rows = result.rows.map((r) => [
+    r.client_name || '',
+    r.sm8_job_number || '',
+    r.total_project_amount ? Number(r.total_project_amount).toFixed(2) : '',
+    r.deposit_inv_number || '',
+    r.deposit_amount ? Number(r.deposit_amount).toFixed(2) : '',
+    r.deposit_paid_date ? String(r.deposit_paid_date).split('T')[0] : 'Pending',
+    r.payment2_inv_number || '',
+    r.payment2_amount ? Number(r.payment2_amount).toFixed(2) : '',
+    r.payment2_paid_date ? String(r.payment2_paid_date).split('T')[0] : '',
+    r.final_inv_number || '',
+    r.final_amount ? Number(r.final_amount).toFixed(2) : '',
+    r.final_paid_date ? String(r.final_paid_date).split('T')[0] : '',
+    r.balance_due ? Number(r.balance_due).toFixed(2) : '',
+    r.status || '',
+  ]);
+
+  // Clear existing data rows and rewrite
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId,
+    range: 'Tracker!A2:N10000',
+  });
+
+  if (rows.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: 'Tracker!A2',
+      valueInputOption: 'RAW',
+      requestBody: { values: rows },
+    });
+  }
+
+  logger.info({ event: 'deposit_tracker_synced', projectType, rows: rows.length });
+}
+
+export async function updateDepositTrackerRow(
+  jobNumber: string,
+  updates: Record<string, unknown>
+): Promise<void> {
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+  let idx = 1;
+
+  for (const [key, value] of Object.entries(updates)) {
+    setClauses.push(`${key} = $${idx}`);
+    values.push(value);
+    idx++;
+  }
+
+  setClauses.push(`updated_at = NOW()`);
+  values.push(jobNumber);
+
+  await pool.query(
+    `UPDATE deposit_tracker SET ${setClauses.join(', ')} WHERE sm8_job_number = $${idx}`,
+    values
+  );
+
+  // Determine project type and sync
+  const typeRes = await pool.query(
+    'SELECT project_type FROM deposit_tracker WHERE sm8_job_number = $1 LIMIT 1',
+    [jobNumber]
+  );
+  if (typeRes.rows[0]) {
+    await syncDepositTrackerToSheet(typeRes.rows[0].project_type);
+  }
+}
+
 // ── Sync client data to sheet ───────────────────────────────────
 
 interface XeroContact {

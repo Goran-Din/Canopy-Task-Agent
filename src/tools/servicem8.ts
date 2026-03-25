@@ -221,6 +221,119 @@ export async function getJobAddress(jobNumber: string): Promise<string> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Job quote details for deposit invoicing
+// ---------------------------------------------------------------------------
+
+const HARDSCAPE_KEYWORDS = ['patio', 'wall', 'hardscape', 'paver', 'concrete', 'drainage', 'walkway', 'driveway', 'retaining', 'stone', 'brick'];
+
+export async function getJobQuoteDetails(jobNumberOrUuid: string): Promise<{
+  uuid: string;
+  jobNumber: string;
+  clientName: string;
+  companyUuid: string;
+  description: string;
+  totalAmount: number;
+  lineItems: Array<{ description: string; unitAmount: number; quantity: number }>;
+  projectType: 'hardscape' | 'landscape';
+} | null> {
+  try {
+    const allJobsRes = await sm8Api.get('/job.json');
+    const allJobs = allJobsRes.data || [];
+
+    const job = allJobs.find((j: { generated_job_id?: string; uuid: string }) =>
+      j.generated_job_id === jobNumberOrUuid ||
+      j.generated_job_id === String(jobNumberOrUuid) ||
+      j.uuid === jobNumberOrUuid
+    );
+    if (!job) return null;
+
+    // Fetch client name
+    let clientName = 'Unknown Client';
+    if (job.company_uuid) {
+      try {
+        const clientRes = await sm8Api.get('/company.json', { params: { uuid: job.company_uuid } });
+        const client = clientRes.data?.[0];
+        if (client?.name) clientName = client.name;
+      } catch { /* use default */ }
+    }
+
+    // Fetch line items from jobmaterial endpoint
+    let lineItems: Array<{ description: string; unitAmount: number; quantity: number }> = [];
+    try {
+      const matRes = await sm8Api.get('/jobmaterial.json', { params: { job_uuid: job.uuid } });
+      const materials = matRes.data || [];
+      lineItems = materials
+        .filter((m: { active: number }) => m.active === 1)
+        .map((m: { material_name?: string; unit_cost?: number; qty?: number }) => ({
+          description: m.material_name || 'Line item',
+          unitAmount: parseFloat(String(m.unit_cost || 0)),
+          quantity: parseFloat(String(m.qty || 1)),
+        }));
+    } catch {
+      logger.warn({ event: 'jobmaterial_fetch_failed', job_uuid: job.uuid });
+    }
+
+    const totalAmount = lineItems.reduce((sum, li) => sum + li.unitAmount * li.quantity, 0);
+
+    // Determine project type from description
+    const descLower = (job.job_description || '').toLowerCase();
+    const isHardscape = HARDSCAPE_KEYWORDS.some((kw) => descLower.includes(kw));
+
+    logger.info({ event: 'job_quote_details', job_number: job.generated_job_id, total: totalAmount, type: isHardscape ? 'hardscape' : 'landscape' });
+
+    return {
+      uuid: job.uuid,
+      jobNumber: job.generated_job_id || job.uuid,
+      clientName,
+      companyUuid: job.company_uuid || '',
+      description: job.job_description || '',
+      totalAmount,
+      lineItems,
+      projectType: isHardscape ? 'hardscape' : 'landscape',
+    };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'get_job_quote_details_error', error: error.message });
+    return null;
+  }
+}
+
+export async function getXeroContactForSM8Job(companyUuid: string): Promise<{ contactId: string; name: string } | null> {
+  try {
+    // Get client name from SM8
+    const clientRes = await sm8Api.get(`/company/${companyUuid}.json`);
+    const clientName = clientRes.data?.name;
+    if (!clientName) return null;
+
+    // Search Xero contacts by name
+    const { getAccessToken } = await import('./xero');
+    const { getConfigValue } = await import('../db/queries');
+    const token = await getAccessToken();
+    const tenantId = await getConfigValue('xero_tenant_id');
+    if (!tenantId) return null;
+
+    const xeroRes = await axios.get('https://api.xero.com/api.xro/2.0/Contacts', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Xero-Tenant-Id': tenantId,
+        Accept: 'application/json',
+      },
+      params: { where: `Name.Contains("${clientName.replace(/"/g, '')}")` },
+      timeout: 10000,
+    });
+
+    const contacts = xeroRes.data?.Contacts || [];
+    if (contacts.length === 0) return null;
+
+    return { contactId: contacts[0].ContactID, name: contacts[0].Name };
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    logger.error({ event: 'get_xero_contact_error', error: error.message });
+    return null;
+  }
+}
+
 export async function createJob(input: CreateJobInput): Promise<{ success: boolean; job_uuid: string; job_number: string; message: string }> {
   try {
     // Find client by name

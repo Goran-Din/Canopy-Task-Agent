@@ -375,6 +375,20 @@ export const toolDefinitions: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'create_deposit_invoice',
+    description: 'Create a deposit invoice for a job. Use when someone says create deposit invoice, deposit invoice for job #N, or similar. Fetches job details from SM8 and presents deposit amount for confirmation.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        job_identifier: {
+          type: 'string',
+          description: 'Job number (e.g. "123") or client name to look up',
+        },
+      },
+      required: ['job_identifier'],
+    },
+  },
+  {
     name: 'search_knowledge_base',
     description: 'Searches the company knowledge base for SOPs, policies, and procedures. Use when a team member asks about company policies, standard procedures, how to handle specific situations, or any operational question that might be documented.',
     input_schema: {
