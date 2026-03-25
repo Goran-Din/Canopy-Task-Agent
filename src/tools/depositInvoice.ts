@@ -20,7 +20,7 @@ interface PendingDeposit {
     lineItems: Array<{ description: string; unitAmount: number; quantity: number }>;
     projectType: 'hardscape' | 'landscape';
   };
-  contact: { contactId: string; name: string };
+  contact: { contactId: string; name: string; clientId: string | null };
   firstPaymentPercent: number;
   depositAmount: number;
 }
@@ -66,9 +66,9 @@ export async function handleDepositInvoiceRequest(
       return 'Job not found in ServiceM8. Please check the job number and try again.';
     }
 
-    const contact = await getXeroContactForSM8Job(job.companyUuid);
+    const contact = await getXeroContactForSM8Job(job.companyUuid, job.clientName);
     if (!contact) {
-      return `Client not found in Xero for job #${job.jobNumber}. Please add them to Xero first.`;
+      return `Client not found in Xero for job #${job.jobNumber} (${job.clientName}). Please add them to Xero first.`;
     }
 
     const firstPaymentPercent = extractFirstPaymentPercent(job.description) || 30;
@@ -80,7 +80,12 @@ export async function handleDepositInvoiceRequest(
       ? job.description.substring(0, 300) + '...'
       : job.description;
 
+    const contactInfo = contact.clientId
+      ? `${contact.name} (${contact.clientId})`
+      : contact.name;
+
     return `\u{1F4CB} Job #${job.jobNumber} \u2014 ${job.clientName}
+Xero contact: ${contactInfo}
 Project type: ${job.projectType === 'hardscape' ? '\u{1F3D7}\uFE0F Hardscape' : '\u{1F33F} Landscape'}
 Total quote value: $${job.totalAmount.toFixed(2)}
 
