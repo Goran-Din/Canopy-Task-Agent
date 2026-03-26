@@ -12,7 +12,13 @@ import { queryXeroInvoices } from '../tools/xero';
 import { getScheduleCache } from '../workers/landscapeSync';
 import { createProspect, updateProspectStage, assignCrew, delayCrewJobs, getPipelineSummaryText } from '../tools/hardscape';
 import { handleDepositInvoiceRequest, confirmDepositInvoice, hasPendingDeposit } from '../tools/depositInvoice';
+import { handleCreateXeroContact } from '../tools/xeroContacts';
+import { handleCreateXeroInvoice } from '../tools/xeroInvoice';
 import { User, CreateTaskInput, UpdateTaskInput, GetJobStatusInput, UpdateJobStatusInput, CreateJobInput, NotifyUserInput, XeroQueryInput, LandscapeCrewId, CreateProspectInput, UpdateProspectStageInput, AssignCrewInput, DelayCrewJobsInput } from '../types';
+import { storeMemory, retrieveMemories, storeImprovementMemory, retrieveImprovements } from '../memory/mem0Client';
+import logger from '../logger';
+
+const AGENT_ID = 'canopy-task-agent';
 
 const anthropic = new Anthropic({ apiKey: config.anthropic.apiKey });
 
@@ -158,12 +164,40 @@ async function executeToolCall(
         return JSON.stringify({ documents: results });
       }
 
+      case 'create_xero_contact': {
+        const result = await handleCreateXeroContact({
+          name: toolInput.name as string,
+          phone: toolInput.phone as string | undefined,
+          email: toolInput.email as string | undefined,
+          confirm_create: toolInput.confirm_create as boolean | undefined,
+        });
+        return JSON.stringify(result);
+      }
+
+      case 'create_xero_invoice': {
+        const result = await handleCreateXeroInvoice({
+          job_uuid: toolInput.job_uuid as string,
+          notes: toolInput.notes as string | undefined,
+        });
+        return JSON.stringify(result);
+      }
+
       default:
         return JSON.stringify({ error: `Unknown tool: ${toolName}` });
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error(`Tool ${toolName} failed:`, message);
+
+    // Record the failure as an improvement memory (fire-and-forget)
+    storeImprovementMemory(
+      AGENT_ID,
+      `Tool ${toolName} was called`,
+      `Execution with input keys: ${Object.keys(toolInput).join(', ')}`,
+      `Failed: ${message}`,
+      `Tool ${toolName} failed — verify inputs before calling`
+    ).catch(() => {});
+
     return JSON.stringify({ error: message });
   }
 }
@@ -172,6 +206,13 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
   const history = await getConversationHistory(user.telegram_id);
 
   await saveConversationTurn(user.telegram_id, 'user', userMessage);
+
+  // Retrieve memories from Mem0 (non-blocking — failures are silent)
+  const userId = String(user.telegram_id);
+  const [memories, improvements] = await Promise.all([
+    retrieveMemories(AGENT_ID, userId, userMessage),
+    retrieveImprovements(AGENT_ID, userMessage),
+  ]);
 
   // Direct job update shortcut — bypass Claude's tendency to call get_job_status first
   const jobUpdateMatch = userMessage.match(/(?:update|change|move|set)\s+job\s+#?(\d+).*?(?:to\s+)(work order|in progress|invoice|completed|quote|unsuccessful|done|finished?)/i);
@@ -240,11 +281,25 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
     timeZoneName: 'short',
   });
 
-  const systemPrompt = buildSystemPrompt(
+  let systemPrompt = buildSystemPrompt(
     user.name,
     user.role,
     `${currentDate} · ${currentTime}`
   );
+
+  // Inject Mem0 memories into system prompt
+  if (memories.length > 0 || improvements.length > 0) {
+    const memoryLines: string[] = [];
+    if (memories.length > 0) {
+      memoryLines.push('About this user:');
+      memories.forEach((m) => memoryLines.push(`- ${m}`));
+    }
+    if (improvements.length > 0) {
+      memoryLines.push('Lessons learned:');
+      improvements.forEach((m) => memoryLines.push(`- ${m}`));
+    }
+    systemPrompt += `\n\n== WHAT I REMEMBER ==\n${memoryLines.join('\n')}\n`;
+  }
 
   const messages: Anthropic.MessageParam[] = [
     ...history.map((turn) => ({
@@ -311,6 +366,13 @@ export async function runAgent(user: User, userMessage: string): Promise<string>
 
   await trimConversationHistory(user.telegram_id);
 
+  // Store memory of this interaction (fire-and-forget)
+  storeMemory(
+    AGENT_ID,
+    userId,
+    `User asked: ${userMessage.slice(0, 200)} | Agent responded: ${finalText.slice(0, 200)}`
+  ).catch((err) => logger.error({ event: 'mem0_post_store_error', error: String(err) }));
+
   return finalText;
 }
 
@@ -321,7 +383,14 @@ export async function runAgentWithPhoto(user: User, base64Image: string, textCon
 
   await saveConversationTurn(user.telegram_id, 'user', combinedMessage);
 
-  const systemPrompt = buildSystemPrompt(
+  // Retrieve memories from Mem0
+  const userId = String(user.telegram_id);
+  const [memories, improvements] = await Promise.all([
+    retrieveMemories(AGENT_ID, userId, textContext),
+    retrieveImprovements(AGENT_ID, textContext),
+  ]);
+
+  let systemPrompt = buildSystemPrompt(
     user.name,
     user.role,
     new Date().toLocaleDateString('en-US', {
@@ -331,6 +400,20 @@ export async function runAgentWithPhoto(user: User, base64Image: string, textCon
       hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short',
     })
   );
+
+  // Inject Mem0 memories into system prompt
+  if (memories.length > 0 || improvements.length > 0) {
+    const memoryLines: string[] = [];
+    if (memories.length > 0) {
+      memoryLines.push('About this user:');
+      memories.forEach((m) => memoryLines.push(`- ${m}`));
+    }
+    if (improvements.length > 0) {
+      memoryLines.push('Lessons learned:');
+      improvements.forEach((m) => memoryLines.push(`- ${m}`));
+    }
+    systemPrompt += `\n\n== WHAT I REMEMBER ==\n${memoryLines.join('\n')}\n`;
+  }
 
   const photoPrompt = `The team member sent you a photo. Extract all useful information from it.
 
@@ -409,6 +492,13 @@ ${textContext !== 'No additional message provided.' ? 'The user also sent this m
 
   await saveConversationTurn(user.telegram_id, 'assistant', finalText);
   await trimConversationHistory(user.telegram_id);
+
+  // Store memory of this interaction (fire-and-forget)
+  storeMemory(
+    AGENT_ID,
+    userId,
+    `User sent photo${textContext !== 'No additional message provided.' ? ` with message: ${textContext.slice(0, 150)}` : ''} | Agent responded: ${finalText.slice(0, 200)}`
+  ).catch((err) => logger.error({ event: 'mem0_post_store_error', error: String(err) }));
 
   return finalText;
 }

@@ -4,7 +4,7 @@ import { config } from '../config';
 import { pool } from '../db/pool';
 import { getConfigValue } from '../db/queries';
 import { bot } from '../telegram/bot';
-import { addProspectComment, updateProspectStage } from '../db/hardscapeQueries';
+import { addProspectComment, updateProspectStage, createProspect } from '../db/hardscapeQueries';
 import logger from '../logger';
 
 // ---------------------------------------------------------------------------
@@ -19,10 +19,7 @@ const SM8_HEADERS = {
 
 const GORAN_CHAT_ID = 1996235953;
 
-const HARDSCAPE_KEYWORDS = [
-  'patio', 'pavers', 'retaining wall', 'driveway', 'walkway',
-  'hardscape', 'stone', 'brick', 'concrete', 'pergola',
-];
+const HARDSCAPE_ACCOUNT_CODE = '4230';
 
 // ---------------------------------------------------------------------------
 // JOB 1 — Detect new hardscape quotes (top of every hour)
@@ -69,16 +66,47 @@ async function detectNewHardscapeQuotes(): Promise<void> {
     );
     const existingUuids = new Set(existingRes.rows.map((r: { sm8_job_uuid: string }) => r.sm8_job_uuid));
 
+    // Filter to jobs that need checking (not already tracked or skipped)
+    const candidates = recentQuotes.filter(
+      (j) => !existingUuids.has(j.uuid) && !skipUuids.includes(j.uuid)
+    );
+
+    if (candidates.length === 0) {
+      logger.info({ event: 'hardscape_detect_complete', quotes_checked: recentQuotes.length, detected: 0 });
+      return;
+    }
+
+    // Fetch all job materials once and index by job_uuid
+    let allMaterials: Array<{ job_uuid: string; name?: string; item_code?: string }> = [];
+    try {
+      const matRes = await axios.get(`${SM8_BASE}/jobmaterial.json`, {
+        headers: SM8_HEADERS,
+        timeout: 15000,
+      });
+      allMaterials = matRes.data || [];
+    } catch (err) {
+      logger.error({
+        event: 'hardscape_detect_materials_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    const materialsByJob = new Map<string, typeof allMaterials>();
+    for (const mat of allMaterials) {
+      const list = materialsByJob.get(mat.job_uuid) || [];
+      list.push(mat);
+      materialsByJob.set(mat.job_uuid, list);
+    }
+
     let detected = 0;
 
-    for (const job of recentQuotes) {
-      // Skip if already tracked or in skip list
-      if (existingUuids.has(job.uuid)) continue;
-      if (skipUuids.includes(job.uuid)) continue;
-
-      // Check for hardscape keywords in description
-      const desc = (job.job_description || '').toLowerCase();
-      const isHardscape = HARDSCAPE_KEYWORDS.some((kw) => desc.includes(kw));
+    for (const job of candidates) {
+      // Check if any job material has item code 4230
+      const jobMats = materialsByJob.get(job.uuid) || [];
+      const isHardscape = jobMats.some(
+        (m) => m.item_code === HARDSCAPE_ACCOUNT_CODE ||
+               (m.name || '').includes(HARDSCAPE_ACCOUNT_CODE)
+      );
       if (!isHardscape) continue;
 
       // Look up company name
@@ -96,15 +124,23 @@ async function detectNewHardscapeQuotes(): Promise<void> {
       const jobNumber = job.generated_job_id || job.uuid.slice(0, 8);
 
       try {
+        await createProspect({
+          sm8_client_uuid: job.company_uuid,
+          sm8_client_name: clientName,
+          sm8_job_uuid: job.uuid,
+          sm8_job_number: jobNumber,
+          stage: 'quote_sent',
+        });
+
         await bot.sendMessage(
           GORAN_CHAT_ID,
-          `🏗️ New hardscape quote detected for ${clientName} — Job #${jobNumber}.\nShould I add this to the hardscape pipeline? Reply 'yes ${clientName}' to confirm or 'skip ${job.uuid}' to ignore.`
+          `🏗️ Job #${jobNumber} — ${clientName} added to the Hardscape Pipeline.`
         );
         detected++;
-        logger.info({ event: 'hardscape_quote_detected', job_uuid: job.uuid, client: clientName });
+        logger.info({ event: 'hardscape_quote_auto_added', job_uuid: job.uuid, client: clientName });
       } catch (err) {
         logger.error({
-          event: 'hardscape_detect_notify_error',
+          event: 'hardscape_detect_add_error',
           job_uuid: job.uuid,
           error: err instanceof Error ? err.message : String(err),
         });

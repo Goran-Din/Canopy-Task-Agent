@@ -1,7 +1,7 @@
 import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import { bot } from './bot';
-import { getUserByTelegramId, getConfigValue, setConfigValue } from '../db/queries';
+import { getUserByTelegramId } from '../db/queries';
 import { runAgent, runAgentWithPhoto } from '../agent/core';
 import { notifyUser } from '../tools/telegram_notify';
 import { config } from '../config';
@@ -168,31 +168,6 @@ export function registerHandlers(): void {
         return;
       }
       await handleAdminCommand(text, chatId);
-      return;
-    }
-
-    // Handle "skip <uuid>" replies for hardscape quote detection
-    const skipMatch = text.match(/^skip\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
-    if (skipMatch && isAdmin(telegramId)) {
-      const uuid = skipMatch[1].toLowerCase();
-      try {
-        let skipList: string[] = [];
-        const existing = await getConfigValue('hardscape_skip_jobs');
-        if (existing) {
-          try { skipList = JSON.parse(existing); } catch { /* reset */ }
-        }
-        if (!skipList.includes(uuid)) {
-          skipList.push(uuid);
-          await setConfigValue('hardscape_skip_jobs', JSON.stringify(skipList));
-          await bot.sendMessage(chatId, `✅ Job ${uuid} added to hardscape skip list.`);
-          logger.info({ event: 'hardscape_skip_added', uuid });
-        } else {
-          await bot.sendMessage(chatId, `Job ${uuid} is already in the skip list.`);
-        }
-      } catch (err) {
-        logger.error({ event: 'hardscape_skip_error', error: err instanceof Error ? err.message : String(err) });
-        await bot.sendMessage(chatId, 'Failed to update skip list. Please try again.');
-      }
       return;
     }
 

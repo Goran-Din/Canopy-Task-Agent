@@ -402,4 +402,48 @@ export const toolDefinitions: Anthropic.Tool[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'create_xero_contact',
+    description: 'Create a new client contact in Xero accounting. First searches for existing contacts with the same or similar name to avoid duplicates. If an exact match exists, returns the existing contact. If a similar match exists, asks user to confirm before creating. If no match, creates the new contact. Requires at minimum: name + phone OR email.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Full name of the client or company to create in Xero',
+        },
+        phone: {
+          type: 'string',
+          description: 'Phone number for the contact. At least phone or email is required.',
+        },
+        email: {
+          type: 'string',
+          description: 'Email address for the contact. At least phone or email is required.',
+        },
+        confirm_create: {
+          type: 'boolean',
+          description: 'Set to true only when the user has explicitly confirmed they want to create a new contact despite a similar match being found.',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'create_xero_invoice',
+    description: 'Creates an invoice in Xero from a ServiceM8 quote/job. Reads all job items, quantities and rates from ServiceM8, matches the client to a Xero contact, and creates the invoice as SUBMITTED status so it appears in the Xero Awaiting Approval tab for Hristina or Gordana to review. Use when someone asks to invoice a job, create an invoice, or push a quote to Xero.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        job_uuid: {
+          type: 'string',
+          description: 'The ServiceM8 job UUID or job number (e.g. "137") to create the invoice from. Job numbers are resolved to UUIDs automatically.',
+        },
+        notes: {
+          type: 'string',
+          description: 'Optional additional notes to add to the invoice',
+        },
+      },
+      required: ['job_uuid'],
+    },
+  },
 ];
