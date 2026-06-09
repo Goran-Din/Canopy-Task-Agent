@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
+import ListTab from './components/ListTab';
 import PipelineTab from './components/PipelineTab';
 import CrewCalendar from './components/CrewCalendar';
 import ArchiveTab from './components/ArchiveTab';
 
 const TABS = [
+  { key: 'list', label: 'List' },
   { key: 'pipeline', label: 'Pipeline' },
   { key: 'calendar', label: 'Crew Calendar' },
   { key: 'archive', label: 'Archive' },
@@ -13,7 +15,7 @@ export default function HardscapeApp() {
   const [authed, setAuthed] = useState(false);
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [tab, setTab] = useState('pipeline');
+  const [tab, setTab] = useState('list');
   const [prospects, setProspects] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -145,6 +147,7 @@ export default function HardscapeApp() {
 
       {/* Content */}
       <div className="max-w-6xl mx-auto px-4 py-4">
+        {tab === 'list' && <ListTab />}
         {tab === 'pipeline' && (
           <PipelineTab prospects={prospects} loading={loading} />
         )}

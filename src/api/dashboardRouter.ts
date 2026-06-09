@@ -46,6 +46,38 @@ router.get('/dashboard/prospects', async (_req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /dashboard/projects — ALL hardscape projects (active + completed + lost)
+// One row per project (per job). Powers the CRM List view. Reuses the same
+// invoice_cache and job_comments joins the existing badges/notes already use.
+// ---------------------------------------------------------------------------
+
+router.get('/dashboard/projects', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        p.id, p.sm8_job_number, p.sm8_job_uuid, p.sm8_client_name,
+        p.stage, p.crew_assignment, p.scope_summary, p.quoted_total, p.sm8_status,
+        p.notes, p.scheduled_start, p.created_at, p.updated_at,
+        u.name AS assigned_to_name,
+        ic.invoice_status, ic.invoice_number, ic.invoice_amount,
+        ic.due_date AS invoice_due_date, ic.paid_date AS invoice_paid_date,
+        jc.comment_text AS job_comment,
+        (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = p.id) AS comment_count
+      FROM hardscape_prospects p
+      LEFT JOIN users u ON u.telegram_id = p.assigned_to
+      LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
+      LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
+      ORDER BY p.updated_at DESC
+    `);
+
+    res.json({ projects: result.rows });
+  } catch (err) {
+    logger.error({ event: 'dashboard_get_projects_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /dashboard/prospects/:id — single prospect with full comment thread
 // ---------------------------------------------------------------------------
 
