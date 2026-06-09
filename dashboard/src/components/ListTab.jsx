@@ -142,6 +142,7 @@ export default function ListTab() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [crewFilter, setCrewFilter] = useState('all');
   const [invoiceFilter, setInvoiceFilter] = useState('all');
+  const [showHidden, setShowHidden] = useState(false);
   const [sortKey, setSortKey] = useState('date');
   const [sortDir, setSortDir] = useState('desc');
   const [expanded, setExpanded] = useState(null);
@@ -149,7 +150,8 @@ export default function ListTab() {
 
   const fetchProjects = useCallback(async () => {
     try {
-      const res = await fetch('/dashboard/projects', { credentials: 'include' });
+      const url = showHidden ? '/dashboard/projects?includeHidden=true' : '/dashboard/projects';
+      const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch projects');
       const data = await res.json();
       setProjects(data.projects || []);
@@ -158,7 +160,7 @@ export default function ListTab() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showHidden]);
 
   useEffect(() => {
     fetchProjects();
@@ -186,6 +188,21 @@ export default function ListTab() {
     }
   }, [fetchProjects]);
 
+  const hideProject = useCallback((id) => {
+    const reason = window.prompt('Reason for hiding this project (required):');
+    if (reason === null) return; // cancelled
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      window.alert('A reason is required to hide a project.');
+      return;
+    }
+    patchProject(id, { hidden: true, hidden_reason: trimmed });
+  }, [patchProject]);
+
+  const unhideProject = useCallback((id) => {
+    patchProject(id, { hidden: false });
+  }, [patchProject]);
+
   const toggleSort = (key) => {
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -197,6 +214,7 @@ export default function ListTab() {
 
   const filtered = useMemo(() => {
     let rows = projects.filter((p) => {
+      if (!showHidden && p.hidden) return false;
       if (search) {
         const q = search.toLowerCase();
         const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''} ${p.design_number || ''} ${p.job_address || ''}`.toLowerCase();
@@ -221,13 +239,14 @@ export default function ListTab() {
       return 0;
     });
     return rows;
-  }, [projects, search, statusFilter, crewFilter, invoiceFilter, sortKey, sortDir]);
+  }, [projects, search, statusFilter, crewFilter, invoiceFilter, sortKey, sortDir, showHidden]);
 
   const summary = useMemo(() => {
-    const total = projects.length;
-    const openQuotes = projects.filter((p) => QUOTE_STAGES.includes(p.stage)).length;
-    const inProduction = projects.filter((p) => PRODUCTION_STAGES.includes(p.stage)).length;
-    const completed = projects.filter((p) => p.stage === 'completed').length;
+    const visible = projects.filter((p) => !p.hidden);
+    const total = visible.length;
+    const openQuotes = visible.filter((p) => QUOTE_STAGES.includes(p.stage)).length;
+    const inProduction = visible.filter((p) => PRODUCTION_STAGES.includes(p.stage)).length;
+    const completed = visible.filter((p) => p.stage === 'completed').length;
     return { total, openQuotes, inProduction, completed };
   }, [projects]);
 
@@ -277,6 +296,16 @@ export default function ListTab() {
         >
           {INVOICE_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
+        <button
+          onClick={() => setShowHidden((v) => !v)}
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+            showHidden
+              ? 'bg-gray-700 text-white border-gray-700'
+              : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+          }`}
+        >
+          {showHidden ? '✓ Showing hidden' : 'Show hidden'}
+        </button>
         <div className="text-xs text-gray-400 self-center ml-auto">
           {filtered.length} of {projects.length}
         </div>
@@ -294,7 +323,7 @@ export default function ListTab() {
 
       {!loading && filtered.length > 0 && (
         <div className="overflow-x-auto bg-white rounded-xl border border-gray-200">
-          <table className="w-full text-xs" style={{ minWidth: '980px' }}>
+          <table className="w-full text-xs" style={{ minWidth: '1040px' }}>
             <thead>
               <tr className="text-left text-gray-400 border-b border-gray-100">
                 <th className="py-2.5 px-3 font-medium">Job #</th>
@@ -306,6 +335,7 @@ export default function ListTab() {
                 <th className="py-2.5 px-3 font-medium">Invoice</th>
                 <th className={`py-2.5 px-3 font-medium text-right ${headerBtn}`} onClick={() => toggleSort('value')}>Value{sortArrow('value')}</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('date')}>Date{sortArrow('date')}</th>
+                <th className="py-2.5 px-3 font-medium"></th>
               </tr>
             </thead>
             <tbody>
@@ -316,16 +346,21 @@ export default function ListTab() {
                   <Fragment key={p.id}>
                     <tr
                       onClick={() => setExpanded(isOpen ? null : p.id)}
-                      className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${isOpen ? 'bg-gray-50' : ''} ${savingId === p.id ? 'opacity-60' : ''}`}
+                      className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${isOpen ? 'bg-gray-50' : ''} ${savingId === p.id ? 'opacity-60' : ''} ${p.hidden ? 'bg-gray-100 text-gray-400 italic' : ''}`}
                     >
                       <td className="py-2 px-3 font-mono text-gray-500 whitespace-nowrap">
                         {p.sm8_job_number ? `#${p.sm8_job_number}` : '—'}
                       </td>
                       <td className="py-2 px-3">
-                        <div className="font-medium text-gray-900 whitespace-nowrap">{p.sm8_client_name}</div>
+                        <div className={`font-medium whitespace-nowrap ${p.hidden ? 'text-gray-500' : 'text-gray-900'}`}>{p.sm8_client_name}</div>
                         {p.job_address && (
                           <div className="text-[11px] text-gray-400 whitespace-nowrap" title={p.job_address}>
                             {p.job_address}
+                          </div>
+                        )}
+                        {p.hidden && (
+                          <div className="text-[11px] text-amber-700 not-italic whitespace-nowrap" title={p.hidden_reason || ''}>
+                            🚫 Hidden — {p.hidden_reason || 'no reason'}
                           </div>
                         )}
                       </td>
@@ -362,10 +397,29 @@ export default function ListTab() {
                         {formatCurrency(p.quoted_total)}
                       </td>
                       <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{formatDate(p.created_at)}</td>
+                      <td className="py-2 px-3 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
+                        {p.hidden ? (
+                          <button
+                            onClick={() => unhideProject(p.id)}
+                            disabled={savingId === p.id}
+                            className="text-xs font-medium text-teal-700 hover:text-teal-900 disabled:opacity-50"
+                          >
+                            Unhide
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => hideProject(p.id)}
+                            disabled={savingId === p.id}
+                            className="text-xs font-medium text-gray-400 hover:text-red-600 disabled:opacity-50"
+                          >
+                            Hide
+                          </button>
+                        )}
+                      </td>
                     </tr>
                     {isOpen && (
                       <tr className="bg-gray-50 border-b border-gray-100">
-                        <td colSpan={9} className="px-3 pb-3 pt-1">
+                        <td colSpan={10} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>

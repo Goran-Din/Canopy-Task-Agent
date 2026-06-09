@@ -34,7 +34,7 @@ router.get('/dashboard/prospects', async (_req: Request, res: Response) => {
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
-      WHERE p.stage NOT IN ('completed', 'lost_opportunity')
+      WHERE p.stage NOT IN ('completed', 'lost_opportunity') AND NOT p.hidden
       ORDER BY p.stage ASC, p.updated_at DESC
     `);
 
@@ -51,13 +51,16 @@ router.get('/dashboard/prospects', async (_req: Request, res: Response) => {
 // invoice_cache and job_comments joins the existing badges/notes already use.
 // ---------------------------------------------------------------------------
 
-router.get('/dashboard/projects', async (_req: Request, res: Response) => {
+router.get('/dashboard/projects', async (req: Request, res: Response) => {
   try {
+    // By default hidden projects are excluded; ?includeHidden=true returns all.
+    const includeHidden = req.query.includeHidden === 'true';
     const result = await pool.query(`
       SELECT
         p.id, p.sm8_job_number, p.sm8_job_uuid, p.sm8_client_name,
         p.stage, p.crew_assignment, p.scope_summary, p.quoted_total, p.sm8_status,
         p.job_address, p.design_number,
+        p.hidden, p.hidden_reason, p.hidden_at,
         p.notes, p.scheduled_start, p.created_at, p.updated_at,
         u.name AS assigned_to_name,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount,
@@ -68,6 +71,7 @@ router.get('/dashboard/projects', async (_req: Request, res: Response) => {
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
+      ${includeHidden ? '' : 'WHERE NOT p.hidden'}
       ORDER BY p.updated_at DESC
     `);
 
@@ -193,7 +197,31 @@ router.patch('/dashboard/prospects/:id', async (req: Request, res: Response) => 
       setClauses.push(`stage_updated_at = NOW()`);
     }
 
-    if (values.length === 0) {
+    // Hide / unhide — reversible flag (handled here, not via allowedFields, so
+    // we can enforce the reason requirement and manage hidden_at).
+    if (body.hidden !== undefined) {
+      if (body.hidden === true) {
+        const reason = typeof body.hidden_reason === 'string' ? body.hidden_reason.trim() : '';
+        if (!reason) {
+          res.status(400).json({ error: 'hidden_reason is required when hiding a project' });
+          return;
+        }
+        setClauses.push(`hidden = TRUE`);
+        setClauses.push(`hidden_at = NOW()`);
+        setClauses.push(`hidden_reason = $${paramIdx}`);
+        values.push(reason);
+        paramIdx++;
+      } else {
+        // Unhide — clear the reason and timestamp.
+        setClauses.push(`hidden = FALSE`);
+        setClauses.push(`hidden_reason = NULL`);
+        setClauses.push(`hidden_at = NULL`);
+      }
+    }
+
+    // setClauses always carries the default `updated_at = NOW()`; anything more
+    // means a real change (note: unhide adds literal clauses but no values).
+    if (setClauses.length === 1) {
       res.status(400).json({ error: 'No valid fields to update' });
       return;
     }
@@ -269,7 +297,7 @@ router.get('/dashboard/archive', async (req: Request, res: Response) => {
   try {
     const { outcome, crew, date_from, date_to, search } = req.query;
 
-    const conditions: string[] = [`p.stage IN ('completed', 'lost_opportunity')`];
+    const conditions: string[] = [`p.stage IN ('completed', 'lost_opportunity')`, `NOT p.hidden`];
     const values: unknown[] = [];
     let paramIdx = 1;
 
