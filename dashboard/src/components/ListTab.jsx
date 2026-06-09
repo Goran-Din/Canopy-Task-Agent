@@ -102,6 +102,32 @@ function CrewSelect({ value, onChange, disabled }) {
   );
 }
 
+// Inline editable Design # — manual reference, saves on blur if changed.
+function DesignNumberCell({ value, disabled, onSave }) {
+  const [text, setText] = useState(value || '');
+  useEffect(() => { setText(value || ''); }, [value]);
+
+  const commit = () => {
+    const trimmed = text.trim();
+    if (trimmed === (value || '').trim()) return;
+    onSave(trimmed || null);
+  };
+
+  return (
+    <input
+      type="text"
+      value={text}
+      disabled={disabled}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      placeholder="—"
+      className="w-20 rounded-md text-xs border border-gray-200 outline-none px-2 py-1 bg-white text-gray-700 focus:border-teal-500 disabled:opacity-50"
+    />
+  );
+}
+
 const SORTABLE = {
   customer: (p) => (p.sm8_client_name || '').toLowerCase(),
   status: (p) => STAGE_KEYS.indexOf(p.stage),
@@ -173,7 +199,7 @@ export default function ListTab() {
     let rows = projects.filter((p) => {
       if (search) {
         const q = search.toLowerCase();
-        const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''}`.toLowerCase();
+        const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''} ${p.design_number || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (statusFilter !== 'all' && p.stage !== statusFilter) return false;
@@ -224,7 +250,7 @@ export default function ListTab() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customer or job #..."
+          placeholder="Search customer, job #, design #..."
           className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-teal-500 w-56"
         />
         <select
@@ -268,11 +294,12 @@ export default function ListTab() {
 
       {!loading && filtered.length > 0 && (
         <div className="overflow-x-auto bg-white rounded-xl border border-gray-200">
-          <table className="w-full text-xs" style={{ minWidth: '880px' }}>
+          <table className="w-full text-xs" style={{ minWidth: '980px' }}>
             <thead>
               <tr className="text-left text-gray-400 border-b border-gray-100">
                 <th className="py-2.5 px-3 font-medium">Job #</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('customer')}>Customer{sortArrow('customer')}</th>
+                <th className="py-2.5 px-3 font-medium">Design #</th>
                 <th className="py-2.5 px-3 font-medium">Scope</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('status')}>Status{sortArrow('status')}</th>
                 <th className="py-2.5 px-3 font-medium">Crew</th>
@@ -294,7 +321,21 @@ export default function ListTab() {
                       <td className="py-2 px-3 font-mono text-gray-500 whitespace-nowrap">
                         {p.sm8_job_number ? `#${p.sm8_job_number}` : '—'}
                       </td>
-                      <td className="py-2 px-3 font-medium text-gray-900 whitespace-nowrap">{p.sm8_client_name}</td>
+                      <td className="py-2 px-3">
+                        <div className="font-medium text-gray-900 whitespace-nowrap">{p.sm8_client_name}</div>
+                        {p.job_address && (
+                          <div className="text-[11px] text-gray-400 whitespace-nowrap" title={p.job_address}>
+                            {p.job_address}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <DesignNumberCell
+                          value={p.design_number}
+                          disabled={savingId === p.id}
+                          onSave={(design_number) => patchProject(p.id, { design_number })}
+                        />
+                      </td>
                       <td className="py-2 px-3 text-gray-500" title={p.scope_summary || ''}>
                         <span className="inline-block bg-gray-100 text-gray-600 rounded px-2 py-0.5 whitespace-nowrap">
                           {scopeTag(p.scope_summary)}
@@ -324,7 +365,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="bg-gray-50 border-b border-gray-100">
-                        <td colSpan={8} className="px-3 pb-3 pt-1">
+                        <td colSpan={9} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>

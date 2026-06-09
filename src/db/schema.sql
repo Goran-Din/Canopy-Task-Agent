@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS hardscape_prospects (
   scope_summary       TEXT,
   quoted_total        NUMERIC(12,2),
   sm8_status          VARCHAR(30),
+  job_address         TEXT,
+  design_number       VARCHAR(50),
   sm8_last_synced     TIMESTAMPTZ,
   stage_updated_at    TIMESTAMPTZ DEFAULT NOW(),
   created_at          TIMESTAMPTZ DEFAULT NOW(),

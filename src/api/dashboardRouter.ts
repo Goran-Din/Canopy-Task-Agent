@@ -57,6 +57,7 @@ router.get('/dashboard/projects', async (_req: Request, res: Response) => {
       SELECT
         p.id, p.sm8_job_number, p.sm8_job_uuid, p.sm8_client_name,
         p.stage, p.crew_assignment, p.scope_summary, p.quoted_total, p.sm8_status,
+        p.job_address, p.design_number,
         p.notes, p.scheduled_start, p.created_at, p.updated_at,
         u.name AS assigned_to_name,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount,
@@ -172,7 +173,7 @@ router.patch('/dashboard/prospects/:id', async (req: Request, res: Response) => 
     const allowedFields = [
       'sm8_client_name', 'sm8_client_uuid', 'sm8_job_uuid', 'sm8_job_number',
       'stage', 'notes', 'assigned_to', 'estimated_crew_days', 'crew_assignment',
-      'scheduled_start', 'client_folder_url',
+      'scheduled_start', 'client_folder_url', 'design_number',
     ];
 
     const setClauses: string[] = ['updated_at = NOW()'];

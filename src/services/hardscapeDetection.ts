@@ -39,6 +39,7 @@ export interface DetectedHardscapeJob {
   sm8_status: string;
   scope_summary: string;
   quoted_total: number;
+  job_address: string;
 }
 
 interface MaterialRecord {
@@ -164,6 +165,14 @@ export async function detectHardscapeJobs(): Promise<DetectedHardscapeJob[]> {
 
     const scopeSummary = buildScopeSummary(items, job.job_description || '');
 
+    // Site address from the SM8 job record — normalise embedded newlines to a
+    // single readable line and tidy duplicate commas / whitespace.
+    const jobAddress = (job.job_address || '')
+      .replace(/\s*\n+\s*/g, ', ')
+      .replace(/,\s*,/g, ',')
+      .replace(/\s+/g, ' ')
+      .trim();
+
     let quotedTotal = parseFloat(job.total_amount || job.job_total || '0');
     if (!quotedTotal || isNaN(quotedTotal)) {
       quotedTotal = allJobmaterials
@@ -183,6 +192,7 @@ export async function detectHardscapeJobs(): Promise<DetectedHardscapeJob[]> {
       sm8_status: job.status,
       scope_summary: scopeSummary,
       quoted_total: Number.isFinite(quotedTotal) ? quotedTotal : 0,
+      job_address: jobAddress,
     });
   }
 
