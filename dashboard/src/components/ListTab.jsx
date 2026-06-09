@@ -128,6 +128,84 @@ function DesignNumberCell({ value, disabled, onSave }) {
   );
 }
 
+// One labeled row inside a mobile card (module-scope so it stays mounted).
+function CardRow({ label, children }) {
+  return (
+    <>
+      <div className="text-gray-400">{label}</div>
+      <div className="min-w-0">{children}</div>
+    </>
+  );
+}
+
+// Stacked card used on narrow (<768px) screens — same controls as the table.
+function MobileCard({ p, saving, isOpen, onToggleScope, onPatch, onHide, onUnhide }) {
+  const invoice = buildInvoice(p);
+  return (
+    <div
+      className={`rounded-xl border border-gray-200 p-3 ${p.hidden ? 'bg-gray-100' : 'bg-white'} ${saving ? 'opacity-60' : ''}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className={`font-semibold text-sm ${p.hidden ? 'text-gray-500 italic' : 'text-gray-900'}`}>
+            {p.sm8_client_name}
+          </div>
+          {p.job_address && <div className="text-[11px] text-gray-400">{p.job_address}</div>}
+        </div>
+        <div className="text-xs font-mono text-gray-400 shrink-0">
+          {p.sm8_job_number ? `#${p.sm8_job_number}` : '—'}
+        </div>
+      </div>
+      {p.hidden && (
+        <div className="text-[11px] text-amber-700 mt-1">🚫 Hidden — {p.hidden_reason || 'no reason'}</div>
+      )}
+
+      <div className="mt-3 grid grid-cols-[78px_1fr] gap-y-2 gap-x-2 items-center text-xs">
+        <CardRow label="Status">
+          <StatusSelect value={p.stage} disabled={saving} onChange={(stage) => onPatch(p.id, { stage })} />
+        </CardRow>
+        <CardRow label="Crew">
+          <CrewSelect value={p.crew_assignment} disabled={saving} onChange={(crew) => onPatch(p.id, { crew_assignment: crew })} />
+        </CardRow>
+        <CardRow label="Design #">
+          <DesignNumberCell value={p.design_number} disabled={saving} onSave={(design_number) => onPatch(p.id, { design_number })} />
+        </CardRow>
+        <CardRow label="Scope">
+          <button type="button" onClick={() => onToggleScope(p.id)} className="text-left">
+            {isOpen ? (
+              <span className="text-gray-600 leading-relaxed">{p.scope_summary || '(no scope details)'}</span>
+            ) : (
+              <span className="inline-block bg-gray-100 text-gray-600 rounded px-2 py-0.5">{scopeTag(p.scope_summary)}</span>
+            )}
+          </button>
+        </CardRow>
+        <CardRow label="Invoice"><InvoiceBadge invoice={invoice} division="hardscape" /></CardRow>
+        <CardRow label="Value"><span className="font-medium text-gray-700">{formatCurrency(p.quoted_total)}</span></CardRow>
+        <CardRow label="Date"><span className="text-gray-500">{formatDate(p.created_at)}</span></CardRow>
+        <CardRow label="Notes">
+          {p.sm8_job_uuid ? (
+            <CommentField jobUuid={p.sm8_job_uuid} division="hardscape" initialComment={p.job_comment || ''} />
+          ) : (
+            <span className="text-gray-400 italic">No linked ServiceM8 job.</span>
+          )}
+        </CardRow>
+      </div>
+
+      <div className="mt-3 pt-2 border-t border-gray-100 flex justify-end">
+        {p.hidden ? (
+          <button onClick={() => onUnhide(p.id)} disabled={saving} className="text-xs font-medium text-teal-700 hover:text-teal-900 disabled:opacity-50">
+            Unhide
+          </button>
+        ) : (
+          <button onClick={() => onHide(p.id)} disabled={saving} className="text-xs font-medium text-gray-400 hover:text-red-600 disabled:opacity-50">
+            Hide
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const SORTABLE = {
   customer: (p) => (p.sm8_client_name || '').toLowerCase(),
   status: (p) => STAGE_KEYS.indexOf(p.stage),
@@ -256,26 +334,26 @@ export default function ListTab() {
   return (
     <div>
       {/* Summary cards */}
-      <div className="flex flex-wrap gap-3 mb-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <SummaryCard label="Total projects" value={summary.total} />
         <SummaryCard label="Open quotes" value={summary.openQuotes} accent="#633806" />
         <SummaryCard label="In production" value={summary.inProduction} accent="#0C447C" />
         <SummaryCard label="Completed" value={summary.completed} accent="#27500A" />
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap gap-2 mb-3">
+      {/* Toolbar — stacks full-width on mobile, wraps inline on sm+ */}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 mb-3">
         <input
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search customer, address, job #, design #..."
-          className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-teal-500 w-56"
+          className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-teal-500 w-full sm:w-56"
         />
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700"
+          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700 w-full sm:w-auto"
         >
           <option value="all">All statuses</option>
           {STAGE_KEYS.map((k) => (
@@ -285,20 +363,20 @@ export default function ListTab() {
         <select
           value={crewFilter}
           onChange={(e) => setCrewFilter(e.target.value)}
-          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700"
+          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700 w-full sm:w-auto"
         >
           {CREW_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
         <select
           value={invoiceFilter}
           onChange={(e) => setInvoiceFilter(e.target.value)}
-          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700"
+          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700 w-full sm:w-auto"
         >
           {INVOICE_FILTERS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
         <button
           onClick={() => setShowHidden((v) => !v)}
-          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg border w-full sm:w-auto ${
             showHidden
               ? 'bg-gray-700 text-white border-gray-700'
               : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
@@ -306,7 +384,7 @@ export default function ListTab() {
         >
           {showHidden ? '✓ Showing hidden' : 'Show hidden'}
         </button>
-        <div className="text-xs text-gray-400 self-center ml-auto">
+        <div className="text-xs text-gray-400 sm:self-center sm:ml-auto">
           {filtered.length} of {projects.length}
         </div>
       </div>
@@ -321,12 +399,13 @@ export default function ListTab() {
         <div className="text-center text-gray-400 text-sm py-12">No projects match the current filters.</div>
       )}
 
+      {/* Desktop / tablet: scrollable table with pinned identity + actions columns */}
       {!loading && filtered.length > 0 && (
-        <div className="overflow-x-auto bg-white rounded-xl border border-gray-200">
-          <table className="w-full text-xs" style={{ minWidth: '1040px' }}>
+        <div className="hidden md:block hs-scroll bg-white rounded-xl border border-gray-200">
+          <table className="hs-table text-xs">
             <thead>
-              <tr className="text-left text-gray-400 border-b border-gray-100">
-                <th className="py-2.5 px-3 font-medium">Job #</th>
+              <tr className="text-left text-gray-400">
+                <th className="hs-sticky-left py-2.5 px-3 font-medium">Job #</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('customer')}>Customer{sortArrow('customer')}</th>
                 <th className="py-2.5 px-3 font-medium">Design #</th>
                 <th className="py-2.5 px-3 font-medium">Scope</th>
@@ -335,7 +414,7 @@ export default function ListTab() {
                 <th className="py-2.5 px-3 font-medium">Invoice</th>
                 <th className={`py-2.5 px-3 font-medium text-right ${headerBtn}`} onClick={() => toggleSort('value')}>Value{sortArrow('value')}</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('date')}>Date{sortArrow('date')}</th>
-                <th className="py-2.5 px-3 font-medium"></th>
+                <th className="hs-sticky-right py-2.5 px-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -346,20 +425,20 @@ export default function ListTab() {
                   <Fragment key={p.id}>
                     <tr
                       onClick={() => setExpanded(isOpen ? null : p.id)}
-                      className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 ${isOpen ? 'bg-gray-50' : ''} ${savingId === p.id ? 'opacity-60' : ''} ${p.hidden ? 'bg-gray-100 text-gray-400 italic' : ''}`}
+                      className={`cursor-pointer ${isOpen ? 'hs-row-expanded' : ''} ${savingId === p.id ? 'opacity-60' : ''} ${p.hidden ? 'hs-row-hidden text-gray-400 italic' : ''}`}
                     >
-                      <td className="py-2 px-3 font-mono text-gray-500 whitespace-nowrap">
+                      <td className="hs-sticky-left py-2 px-3 font-mono text-gray-500 whitespace-nowrap">
                         {p.sm8_job_number ? `#${p.sm8_job_number}` : '—'}
                       </td>
-                      <td className="py-2 px-3">
-                        <div className={`font-medium whitespace-nowrap ${p.hidden ? 'text-gray-500' : 'text-gray-900'}`}>{p.sm8_client_name}</div>
+                      <td className="py-2 px-3 max-w-[220px]">
+                        <div className={`font-medium truncate ${p.hidden ? 'text-gray-500' : 'text-gray-900'}`} title={p.sm8_client_name}>{p.sm8_client_name}</div>
                         {p.job_address && (
-                          <div className="text-[11px] text-gray-400 whitespace-nowrap" title={p.job_address}>
+                          <div className="text-[11px] text-gray-400 truncate" title={p.job_address}>
                             {p.job_address}
                           </div>
                         )}
                         {p.hidden && (
-                          <div className="text-[11px] text-amber-700 not-italic whitespace-nowrap" title={p.hidden_reason || ''}>
+                          <div className="text-[11px] text-amber-700 not-italic truncate" title={p.hidden_reason || ''}>
                             🚫 Hidden — {p.hidden_reason || 'no reason'}
                           </div>
                         )}
@@ -371,8 +450,8 @@ export default function ListTab() {
                           onSave={(design_number) => patchProject(p.id, { design_number })}
                         />
                       </td>
-                      <td className="py-2 px-3 text-gray-500" title={p.scope_summary || ''}>
-                        <span className="inline-block bg-gray-100 text-gray-600 rounded px-2 py-0.5 whitespace-nowrap">
+                      <td className="py-2 px-3 text-gray-500 max-w-[180px]" title={p.scope_summary || ''}>
+                        <span className="inline-block max-w-full truncate align-bottom bg-gray-100 text-gray-600 rounded px-2 py-0.5">
                           {scopeTag(p.scope_summary)}
                         </span>
                       </td>
@@ -397,7 +476,7 @@ export default function ListTab() {
                         {formatCurrency(p.quoted_total)}
                       </td>
                       <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{formatDate(p.created_at)}</td>
-                      <td className="py-2 px-3 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
+                      <td className="hs-sticky-right py-2 px-3 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
                         {p.hidden ? (
                           <button
                             onClick={() => unhideProject(p.id)}
@@ -418,7 +497,7 @@ export default function ListTab() {
                       </td>
                     </tr>
                     {isOpen && (
-                      <tr className="bg-gray-50 border-b border-gray-100">
+                      <tr className="hs-detail-row">
                         <td colSpan={10} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
@@ -455,6 +534,24 @@ export default function ListTab() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Mobile (<768px): stacked cards, no horizontal scroll */}
+      {!loading && filtered.length > 0 && (
+        <div className="md:hidden space-y-3">
+          {filtered.map((p) => (
+            <MobileCard
+              key={p.id}
+              p={p}
+              saving={savingId === p.id}
+              isOpen={expanded === p.id}
+              onToggleScope={(id) => setExpanded((cur) => (cur === id ? null : id))}
+              onPatch={patchProject}
+              onHide={hideProject}
+              onUnhide={unhideProject}
+            />
+          ))}
         </div>
       )}
     </div>

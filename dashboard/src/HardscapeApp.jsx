@@ -119,8 +119,8 @@ export default function HardscapeApp() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-4 py-3">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+      <div className="bg-white border-b border-gray-200 px-3 sm:px-4 py-3">
+        <div className="max-w-screen-2xl mx-auto flex items-center justify-between">
           <div>
             <div className="text-lg font-bold text-gray-900">Hardscape Pipeline</div>
             <div className="text-xs text-gray-400">Sunset Services US</div>
@@ -146,7 +146,7 @@ export default function HardscapeApp() {
       </div>
 
       {/* Content */}
-      <div className="max-w-6xl mx-auto px-4 py-4">
+      <div className="max-w-screen-2xl mx-auto px-3 sm:px-4 py-4">
         {tab === 'list' && <ListTab />}
         {tab === 'pipeline' && (
           <PipelineTab prospects={prospects} loading={loading} />

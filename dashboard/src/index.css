@@ -1,1 +1,42 @@
 @import "tailwindcss";
+
+/* ─── Hardscape List: responsive table (sticky columns + always-visible scrollbar) ─── */
+.hs-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;                 /* Firefox */
+  scrollbar-color: #9ca3af #eef0f2;
+}
+.hs-scroll::-webkit-scrollbar { height: 10px; }
+.hs-scroll::-webkit-scrollbar-track { background: #eef0f2; border-radius: 0 0 0.75rem 0.75rem; }
+.hs-scroll::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 9999px; border: 2px solid #eef0f2; }
+.hs-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+
+.hs-table {
+  width: 100%;
+  min-width: 900px;            /* modest floor; desktop container is fluid, mobile uses cards */
+  border-collapse: separate;   /* required so sticky cells keep an opaque background */
+  border-spacing: 0;
+}
+.hs-table thead tr { background-color: #ffffff; }
+.hs-table thead th { border-bottom: 1px solid #f3f4f6; }
+.hs-table tbody tr { background-color: #ffffff; }
+.hs-table tbody tr:hover { background-color: #f9fafb; }
+.hs-table tbody tr.hs-row-expanded { background-color: #f9fafb; }
+.hs-table tbody tr.hs-row-hidden { background-color: #f3f4f6; }
+.hs-table tbody tr.hs-detail-row { background-color: #f9fafb; }
+.hs-table tbody td { border-bottom: 1px solid #f4f5f7; }
+
+/* Sticky identity column (left) + actions column (right). Cells inherit the
+   row's (opaque) background so content can't show through while scrolling. */
+.hs-sticky-left,
+.hs-sticky-right {
+  position: sticky;
+  background-color: inherit;
+  z-index: 2;
+}
+.hs-sticky-left  { left: 0;  box-shadow: 1px 0 4px -2px rgba(17, 24, 39, 0.18); }
+.hs-sticky-right { right: 0; box-shadow: -1px 0 4px -2px rgba(17, 24, 39, 0.18); }
+/* Header sticky corners sit above body sticky cells. */
+.hs-table thead .hs-sticky-left,
+.hs-table thead .hs-sticky-right { z-index: 4; }
