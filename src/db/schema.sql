@@ -187,3 +187,62 @@ CREATE TABLE IF NOT EXISTS job_comments (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_comments_job ON job_comments(sm8_job_uuid);
 CREATE INDEX IF NOT EXISTS idx_job_comments_division ON job_comments(division);
+
+-- Completion notifications: per-user opt-in for job-completion alerts by division.
+CREATE TABLE IF NOT EXISTS completion_notifications (
+  id          SERIAL PRIMARY KEY,
+  telegram_id BIGINT REFERENCES users(telegram_id),
+  job_types   TEXT[] NOT NULL DEFAULT ARRAY['landscape_project', 'hardscape']::text[],
+  active      BOOLEAN DEFAULT true,
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Deposit tracker: staged deposit/progress payments per project (landscape + hardscape).
+CREATE TABLE IF NOT EXISTS deposit_tracker (
+  id                   SERIAL PRIMARY KEY,
+  project_type         VARCHAR(20) NOT NULL CHECK (project_type IN ('hardscape', 'landscape')),
+  client_name          VARCHAR(200) NOT NULL,
+  sm8_job_uuid         VARCHAR(100),
+  sm8_job_number       VARCHAR(20),
+  total_project_amount NUMERIC(10,2),
+  payment_terms        TEXT,
+  deposit_xero_inv_id  VARCHAR(100),
+  deposit_inv_number   VARCHAR(50),
+  deposit_amount       NUMERIC(10,2),
+  deposit_paid_date    DATE,
+  payment2_xero_inv_id VARCHAR(100),
+  payment2_inv_number  VARCHAR(50),
+  payment2_amount      NUMERIC(10,2),
+  payment2_paid_date   DATE,
+  payment3_xero_inv_id VARCHAR(100),
+  payment3_inv_number  VARCHAR(50),
+  payment3_amount      NUMERIC(10,2),
+  payment3_paid_date   DATE,
+  final_xero_inv_id    VARCHAR(100),
+  final_inv_number     VARCHAR(50),
+  final_amount         NUMERIC(10,2),
+  final_paid_date      DATE,
+  balance_due          NUMERIC(10,2),
+  status               VARCHAR(30) DEFAULT 'Awaiting Deposit',
+  created_at           TIMESTAMPTZ DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dt_job ON deposit_tracker(sm8_job_number);
+CREATE INDEX IF NOT EXISTS idx_dt_status ON deposit_tracker(status);
+
+-- Knowledge base: free-text reference entries with full-text search + tag indexes.
+CREATE TABLE IF NOT EXISTS knowledge_base (
+  id         SERIAL PRIMARY KEY,
+  title      TEXT NOT NULL,
+  content    TEXT NOT NULL,
+  category   TEXT NOT NULL DEFAULT 'general',
+  tags       TEXT[] DEFAULT '{}'::text[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
+CREATE INDEX IF NOT EXISTS idx_kb_search ON knowledge_base
+  USING gin (to_tsvector('english', (title || ' ') || content));
+CREATE INDEX IF NOT EXISTS idx_kb_tags ON knowledge_base USING gin (tags);
