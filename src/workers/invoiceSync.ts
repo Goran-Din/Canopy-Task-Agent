@@ -271,7 +271,7 @@ async function syncInvoices(): Promise<void> {
       const hardscapeResult = await pool.query(`
         SELECT sm8_job_uuid, sm8_client_name
         FROM hardscape_prospects
-        WHERE stage NOT IN ('completed', 'closed_lost')
+        WHERE stage NOT IN ('completed', 'lost_opportunity')
         AND sm8_job_uuid IS NOT NULL
       `);
 

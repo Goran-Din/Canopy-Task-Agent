@@ -4,7 +4,7 @@ import InvoiceBadge from './InvoiceBadge';
 const OUTCOME_FILTERS = [
   { key: 'all', label: 'All' },
   { key: 'completed', label: 'Completed' },
-  { key: 'closed_lost', label: 'Closed / Lost' },
+  { key: 'lost_opportunity', label: 'Lost Opportunity' },
 ];
 
 const CREW_FILTERS = [
@@ -67,7 +67,7 @@ export default function ArchiveTab() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ stage: 'in_progress' }),
+        body: JSON.stringify({ stage: 'work_in_progress' }),
       });
       if (!res.ok) throw new Error('Failed to reopen');
       setSelected(null);
@@ -200,7 +200,7 @@ export default function ArchiveTab() {
                             : 'bg-red-100 text-red-600'
                         }`}
                       >
-                        {p.stage === 'completed' ? 'Completed' : 'Closed / Lost'}
+                        {p.stage === 'completed' ? 'Completed' : 'Lost Opportunity'}
                       </span>
                     </td>
                     <td className="py-2 pr-4 text-gray-600">
@@ -256,7 +256,7 @@ export default function ArchiveTab() {
             disabled={reopening}
             className="block mt-2 px-4 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
-            {reopening ? 'Reopening...' : 'Reopen as In Progress'}
+            {reopening ? 'Reopening...' : 'Reopen as Work in progress'}
           </button>
         </div>
       )}

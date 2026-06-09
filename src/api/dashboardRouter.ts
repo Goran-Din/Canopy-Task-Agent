@@ -6,17 +6,15 @@ import { ProspectStage } from '../types';
 const router = Router();
 
 const STAGE_LABELS: Record<ProspectStage, string> = {
-  initial_contact: 'Initial Contact',
-  site_visit: 'Site Visit',
-  quote_sent: 'Quote Sent',
-  revision_requested: 'Revision Requested',
-  visual_rendering: 'Visual Rendering',
-  final_quote: 'Final Quote',
-  deposit_invoice: 'Deposit Invoice',
-  scheduled: 'Scheduled',
-  in_progress: 'In Progress',
+  request_site_visit: 'Request site visit',
+  pending_quote: 'Pending quote',
+  quote_sent: 'Quote sent',
+  quote_accepted: 'Quote accepted',
+  pending_permits: 'Pending permits',
+  scheduled_for_work: 'Scheduled for work',
+  work_in_progress: 'Work in progress',
   completed: 'Completed',
-  closed_lost: 'Closed / Lost',
+  lost_opportunity: 'Lost opportunity',
 };
 
 // ---------------------------------------------------------------------------
@@ -36,7 +34,7 @@ router.get('/dashboard/prospects', async (_req: Request, res: Response) => {
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
-      WHERE p.stage NOT IN ('completed', 'closed_lost')
+      WHERE p.stage NOT IN ('completed', 'lost_opportunity')
       ORDER BY p.stage ASC, p.updated_at DESC
     `);
 
@@ -115,7 +113,7 @@ router.post('/dashboard/prospects', async (req: Request, res: Response) => {
         sm8_client_uuid || 'unknown',
         sm8_job_uuid || null,
         sm8_job_number || null,
-        stage || 'initial_contact',
+        stage || 'request_site_visit',
         notes || null,
         assigned_to || null,
         client_folder_url || null,
@@ -238,7 +236,7 @@ router.get('/dashboard/archive', async (req: Request, res: Response) => {
   try {
     const { outcome, crew, date_from, date_to, search } = req.query;
 
-    const conditions: string[] = [`p.stage IN ('completed', 'closed_lost')`];
+    const conditions: string[] = [`p.stage IN ('completed', 'lost_opportunity')`];
     const values: unknown[] = [];
     let paramIdx = 1;
 
@@ -409,7 +407,7 @@ router.post('/dashboard/crew-schedule', async (req: Request, res: Response) => {
     await pool.query(
       `UPDATE hardscape_prospects
        SET crew_assignment = $1, scheduled_start = $2, estimated_crew_days = $3,
-           stage = 'scheduled', stage_updated_at = NOW(), updated_at = NOW()
+           stage = 'scheduled_for_work', stage_updated_at = NOW(), updated_at = NOW()
        WHERE id = $4`,
       [crew, start_date, estimated_days, prospect_id]
     );
@@ -567,14 +565,14 @@ router.delete('/dashboard/crew-schedule/:id', async (req: Request, res: Response
     await pool.query(
       `UPDATE hardscape_prospects
        SET crew_assignment = NULL, scheduled_start = NULL,
-           stage = 'deposit_invoice', stage_updated_at = NOW(), updated_at = NOW()
+           stage = 'quote_accepted', stage_updated_at = NOW(), updated_at = NOW()
        WHERE id = $1`,
       [entry.prospect_id]
     );
 
     await pool.query(
       `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
-       VALUES ($1, 'agent', 'Dashboard', 'Removed from crew schedule — returned to Deposit Invoice stage', NOW())`,
+       VALUES ($1, 'agent', 'Dashboard', 'Removed from crew schedule — returned to Quote accepted stage', NOW())`,
       [entry.prospect_id]
     );
 

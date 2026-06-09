@@ -4,7 +4,7 @@ import { config } from '../config';
 import { pool } from '../db/pool';
 import { getConfigValue } from '../db/queries';
 import { bot } from '../telegram/bot';
-import { addProspectComment, updateProspectStage, createProspect } from '../db/hardscapeQueries';
+import { addProspectComment, createProspect } from '../db/hardscapeQueries';
 import logger from '../logger';
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ async function syncJobActivities(): Promise<void> {
     const prospectsRes = await pool.query(
       `SELECT id, sm8_job_uuid, sm8_client_name FROM hardscape_prospects
        WHERE sm8_job_uuid IS NOT NULL
-       AND stage NOT IN ('completed', 'closed_lost')`
+       AND stage NOT IN ('completed', 'lost_opportunity')`
     );
     const prospects: Array<{ id: number; sm8_job_uuid: string; sm8_client_name: string }> = prospectsRes.rows;
 
@@ -241,92 +241,10 @@ async function syncJobActivities(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// JOB 3 — Check SM8 job completion (10 past every hour)
+// NOTE: SM8 job-completion auto-advance removed (Stage 1 CRM migration).
+// The pipeline stage is now manually controlled — ServiceM8 job status must
+// never overwrite it. Activity → comment sync (Job 2) remains intact.
 // ---------------------------------------------------------------------------
-
-async function checkJobCompletions(): Promise<void> {
-  logger.info({ event: 'hardscape_completion_check_start' });
-
-  try {
-    const prospectsRes = await pool.query(
-      `SELECT id, sm8_job_uuid, sm8_job_number, sm8_client_name FROM hardscape_prospects
-       WHERE stage = 'in_progress' AND sm8_job_uuid IS NOT NULL`
-    );
-    const prospects: Array<{
-      id: number;
-      sm8_job_uuid: string;
-      sm8_job_number: string | null;
-      sm8_client_name: string;
-    }> = prospectsRes.rows;
-
-    let completed = 0;
-
-    for (const prospect of prospects) {
-      try {
-        const jobRes = await axios.get(`${SM8_BASE}/job/${prospect.sm8_job_uuid}.json`, {
-          headers: SM8_HEADERS,
-          timeout: 10000,
-        });
-        const job = jobRes.data;
-
-        if (job?.status === 'Completed') {
-          // Update prospect stage
-          await updateProspectStage(prospect.id, 'completed', new Date());
-
-          // Update crew_schedule
-          await pool.query(
-            `UPDATE crew_schedule SET status = 'completed', updated_at = NOW()
-             WHERE prospect_id = $1`,
-            [prospect.id]
-          );
-
-          // Add comment
-          await addProspectComment({
-            prospect_id: prospect.id,
-            source: 'agent',
-            author: 'Agent',
-            content: 'Job completed in SM8 — moved to archive',
-          });
-
-          // Notify Goran
-          const jobNum = prospect.sm8_job_number || prospect.sm8_job_uuid.slice(0, 8);
-          try {
-            await bot.sendMessage(
-              GORAN_CHAT_ID,
-              `✅ Hardscape job #${jobNum} for ${prospect.sm8_client_name} marked complete in SM8.`
-            );
-          } catch {
-            // Notification failure is non-fatal
-          }
-
-          completed++;
-          logger.info({
-            event: 'hardscape_job_completed',
-            prospect_id: prospect.id,
-            client: prospect.sm8_client_name,
-          });
-        }
-      } catch (err) {
-        logger.error({
-          event: 'hardscape_completion_check_prospect_error',
-          prospect_id: prospect.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-
-    logger.info({
-      event: 'hardscape_completion_check_complete',
-      prospects_checked: prospects.length,
-      completions_found: completed,
-    });
-  } catch (err) {
-    logger.error({
-      event: 'hardscape_completion_check_error',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Start all cron jobs
@@ -347,17 +265,10 @@ export function startHardscapeSync(): void {
     );
   }, { timezone: 'America/Chicago' });
 
-  // Job 3 — check SM8 job completions (10 past every hour)
-  cron.schedule('10 * * * *', () => {
-    checkJobCompletions().catch((err) =>
-      logger.error({ event: 'hardscape_completion_cron_error', error: String(err) })
-    );
-  }, { timezone: 'America/Chicago' });
-
   // Run Job 2 immediately on startup to catch missed activity
   syncJobActivities().catch((err) =>
     logger.error({ event: 'hardscape_activity_startup_error', error: String(err) })
   );
 
-  logger.info({ event: 'hardscape_sync_started', jobs: ['detect_quotes@:00', 'sync_activities@:05', 'check_completions@:10'] });
+  logger.info({ event: 'hardscape_sync_started', jobs: ['detect_quotes@:00', 'sync_activities@:05'] });
 }

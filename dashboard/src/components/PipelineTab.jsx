@@ -2,20 +2,18 @@ import { useState } from 'react';
 import ProspectCard from './ProspectCard';
 
 const STAGE_ORDER = [
-  'initial_contact', 'site_visit', 'quote_sent', 'revision_requested',
-  'visual_rendering', 'final_quote', 'deposit_invoice', 'scheduled', 'in_progress',
+  'request_site_visit', 'pending_quote', 'quote_sent', 'quote_accepted',
+  'pending_permits', 'scheduled_for_work', 'work_in_progress',
 ];
 
 const STAGE_LABELS = {
-  initial_contact: 'Initial Contact',
-  site_visit: 'Site Visit',
-  quote_sent: 'Quote Sent',
-  revision_requested: 'Revision Requested',
-  visual_rendering: 'Visual Rendering',
-  final_quote: 'Final Quote',
-  deposit_invoice: 'Deposit Invoice',
-  scheduled: 'Scheduled',
-  in_progress: 'In Progress',
+  request_site_visit: 'Request site visit',
+  pending_quote: 'Pending quote',
+  quote_sent: 'Quote sent',
+  quote_accepted: 'Quote accepted',
+  pending_permits: 'Pending permits',
+  scheduled_for_work: 'Scheduled for work',
+  work_in_progress: 'Work in progress',
 };
 
 const CREW_FILTERS = [

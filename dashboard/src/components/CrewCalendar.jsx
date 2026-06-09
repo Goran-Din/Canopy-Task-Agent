@@ -191,7 +191,7 @@ export default function CrewCalendar() {
   const scheduledProspectIds = new Set(schedule.map((e) => e.prospect_id));
   const eligibleProspects = prospects.filter(
     (p) =>
-      ['deposit_invoice', 'scheduled', 'in_progress'].includes(p.stage) &&
+      ['quote_accepted', 'scheduled_for_work', 'work_in_progress'].includes(p.stage) &&
       (!p.crew_assignment || !scheduledProspectIds.has(p.id))
   );
 

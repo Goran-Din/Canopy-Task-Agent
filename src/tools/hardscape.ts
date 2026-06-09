@@ -32,17 +32,15 @@ const sm8Api = axios.create({
 });
 
 const STAGE_LABELS: Record<ProspectStage, string> = {
-  initial_contact: 'Initial Contact',
-  site_visit: 'Site Visit',
-  quote_sent: 'Quote Sent',
-  revision_requested: 'Revision Requested',
-  visual_rendering: 'Visual Rendering',
-  final_quote: 'Final Quote',
-  deposit_invoice: 'Deposit Invoice',
-  scheduled: 'Scheduled',
-  in_progress: 'In Progress',
+  request_site_visit: 'Request site visit',
+  pending_quote: 'Pending quote',
+  quote_sent: 'Quote sent',
+  quote_accepted: 'Quote accepted',
+  pending_permits: 'Pending permits',
+  scheduled_for_work: 'Scheduled for work',
+  work_in_progress: 'Work in progress',
   completed: 'Completed',
-  closed_lost: 'Closed / Lost',
+  lost_opportunity: 'Lost opportunity',
 };
 
 const CREW_DISPLAY: Record<HardscapeCrewId, string> = {
@@ -82,7 +80,7 @@ export async function createProspect(
       // SM8 lookup failed — proceed with unknown UUID
     }
 
-    const stage = input.stage || 'initial_contact';
+    const stage = input.stage || 'request_site_visit';
     const prospect = await dbCreateProspect({
       sm8_client_uuid: sm8Uuid,
       sm8_client_name: clientName,
@@ -221,15 +219,13 @@ export async function delayCrewJobs(
 export async function getPipelineSummaryText(): Promise<string> {
   const grouped = await getPipelineSummary();
   const PIPELINE_LABELS: Record<string, string> = {
-    initial_contact: 'Initial Contact',
-    site_visit: 'Site Visit',
-    quote_sent: 'Quote Sent',
-    revision_requested: 'Revision Requested',
-    visual_rendering: 'Visual Rendering',
-    final_quote: 'Final Quote',
-    deposit_invoice: 'Deposit Invoice',
-    scheduled: 'Scheduled',
-    in_progress: 'In Progress',
+    request_site_visit: 'Request site visit',
+    pending_quote: 'Pending quote',
+    quote_sent: 'Quote sent',
+    quote_accepted: 'Quote accepted',
+    pending_permits: 'Pending permits',
+    scheduled_for_work: 'Scheduled for work',
+    work_in_progress: 'Work in progress',
   };
   const STAGE_ORDER = Object.keys(PIPELINE_LABELS);
   const lines: string[] = ['🏗️ Hardscape Pipeline\n'];

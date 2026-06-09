@@ -226,8 +226,8 @@ export const toolDefinitions: Anthropic.Tool[] = [
         },
         stage: {
           type: 'string',
-          enum: ['initial_contact', 'site_visit', 'quote_sent', 'revision_requested', 'visual_rendering', 'final_quote', 'deposit_invoice', 'scheduled', 'in_progress', 'completed', 'closed_lost'],
-          description: 'Pipeline stage — defaults to initial_contact if omitted',
+          enum: ['request_site_visit', 'pending_quote', 'quote_sent', 'quote_accepted', 'pending_permits', 'scheduled_for_work', 'work_in_progress', 'completed', 'lost_opportunity'],
+          description: 'Pipeline stage: Request site visit, Pending quote, Quote sent, Quote accepted, Pending permits, Scheduled for work, Work in progress, Completed, Lost opportunity. Defaults to request_site_visit if omitted.',
         },
         sm8_job_uuid: {
           type: 'string',
@@ -257,8 +257,8 @@ export const toolDefinitions: Anthropic.Tool[] = [
         },
         new_stage: {
           type: 'string',
-          enum: ['initial_contact', 'site_visit', 'quote_sent', 'revision_requested', 'visual_rendering', 'final_quote', 'deposit_invoice', 'scheduled', 'in_progress', 'completed', 'closed_lost'],
-          description: 'New pipeline stage',
+          enum: ['request_site_visit', 'pending_quote', 'quote_sent', 'quote_accepted', 'pending_permits', 'scheduled_for_work', 'work_in_progress', 'completed', 'lost_opportunity'],
+          description: 'New pipeline stage: Request site visit, Pending quote, Quote sent, Quote accepted, Pending permits, Scheduled for work, Work in progress, Completed, Lost opportunity.',
         },
         comment: {
           type: 'string',

@@ -60,7 +60,7 @@ export async function updateProspectCrew(
   await pool.query(
     `UPDATE hardscape_prospects
      SET crew_assignment = $1, scheduled_start = $2, estimated_crew_days = $3,
-         stage = 'scheduled', stage_updated_at = NOW(), updated_at = NOW()
+         stage = 'scheduled_for_work', stage_updated_at = NOW(), updated_at = NOW()
      WHERE id = $4`,
     [crew, scheduledStart, estimatedDays, id]
   );
@@ -148,7 +148,7 @@ export async function getPipelineSummary(): Promise<Record<string, any[]>> {
     SELECT id, sm8_client_name, stage, crew_assignment,
            scheduled_start, assigned_to, updated_at
     FROM hardscape_prospects
-    WHERE stage NOT IN ('completed', 'closed_lost')
+    WHERE stage NOT IN ('completed', 'lost_opportunity')
     ORDER BY stage, updated_at DESC
   `);
   const grouped: Record<string, any[]> = {};

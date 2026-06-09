@@ -107,17 +107,15 @@ export interface LandscapeCrewSchedule {
 export type LandscapeCrewId = 'lp1' | 'lp2' | 'lp3' | 'lp4';
 
 export type ProspectStage =
-  | 'initial_contact'
-  | 'site_visit'
+  | 'request_site_visit'
+  | 'pending_quote'
   | 'quote_sent'
-  | 'revision_requested'
-  | 'visual_rendering'
-  | 'final_quote'
-  | 'deposit_invoice'
-  | 'scheduled'
-  | 'in_progress'
+  | 'quote_accepted'
+  | 'pending_permits'
+  | 'scheduled_for_work'
+  | 'work_in_progress'
   | 'completed'
-  | 'closed_lost';
+  | 'lost_opportunity';
 
 export type HardscapeCrewId = 'hp1' | 'hp2';
 

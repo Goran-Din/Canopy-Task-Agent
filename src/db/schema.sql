@@ -74,3 +74,33 @@ CREATE TABLE IF NOT EXISTS nc_client_folders (
 
 CREATE INDEX IF NOT EXISTS idx_nc_folders_client_uuid ON nc_client_folders(sm8_client_uuid);
 CREATE INDEX IF NOT EXISTS idx_nc_folders_client_name ON nc_client_folders(sm8_client_name);
+
+-- Hardscape prospects: the manually-controlled CRM pipeline.
+-- stage is one of 9 values (set manually — ServiceM8 status never changes it):
+--   request_site_visit, pending_quote, quote_sent, quote_accepted, pending_permits,
+--   scheduled_for_work, work_in_progress, completed, lost_opportunity
+CREATE TABLE IF NOT EXISTS hardscape_prospects (
+  id                  SERIAL PRIMARY KEY,
+  sm8_client_uuid     VARCHAR(100) NOT NULL,
+  sm8_client_name     VARCHAR(200) NOT NULL,
+  sm8_job_uuid        VARCHAR(100),
+  sm8_job_number      VARCHAR(50),
+  stage               VARCHAR(50) NOT NULL DEFAULT 'request_site_visit'
+                        CHECK (stage IN ('request_site_visit', 'pending_quote', 'quote_sent',
+                          'quote_accepted', 'pending_permits', 'scheduled_for_work',
+                          'work_in_progress', 'completed', 'lost_opportunity')),
+  assigned_to         BIGINT REFERENCES users(telegram_id),
+  estimated_crew_days INTEGER,
+  crew_assignment     VARCHAR(20),
+  scheduled_start     DATE,
+  client_folder_url   TEXT,
+  notes               TEXT,
+  sm8_last_synced     TIMESTAMPTZ,
+  stage_updated_at    TIMESTAMPTZ DEFAULT NOW(),
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prospects_crew ON hardscape_prospects(crew_assignment);
+CREATE INDEX IF NOT EXISTS idx_prospects_sm8_job ON hardscape_prospects(sm8_job_uuid);
+CREATE INDEX IF NOT EXISTS idx_prospects_stage ON hardscape_prospects(stage);

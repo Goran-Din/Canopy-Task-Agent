@@ -2,15 +2,15 @@ import InvoiceBadge from './InvoiceBadge';
 import CommentField from './CommentField';
 
 const STAGE_STYLES = {
-  initial_contact:      { bg: '#F3F4F6', text: '#6B7280', label: 'Initial Contact' },
-  site_visit:           { bg: '#DBEAFE', text: '#1D4ED8', label: 'Site Visit' },
-  quote_sent:           { bg: '#FEF3C7', text: '#D97706', label: 'Quote Sent' },
-  revision_requested:   { bg: '#FEE2E2', text: '#DC2626', label: 'Revision Requested' },
-  visual_rendering:     { bg: '#EDE9FE', text: '#7C3AED', label: 'Visual Rendering' },
-  final_quote:          { bg: '#ECFDF5', text: '#059669', label: 'Final Quote' },
-  deposit_invoice:      { bg: '#FFF7ED', text: '#EA580C', label: 'Deposit Invoice' },
-  scheduled:            { bg: '#D1FAE5', text: '#065F46', label: 'Scheduled' },
-  in_progress:          { bg: '#CFFAFE', text: '#0E7490', label: 'In Progress' },
+  request_site_visit:   { bg: '#FAEEDA', text: '#633806', label: 'Request site visit' },
+  pending_quote:        { bg: '#FAEEDA', text: '#633806', label: 'Pending quote' },
+  quote_sent:           { bg: '#FAEEDA', text: '#633806', label: 'Quote sent' },
+  quote_accepted:       { bg: '#E6F1FB', text: '#0C447C', label: 'Quote accepted' },
+  pending_permits:      { bg: '#E6F1FB', text: '#0C447C', label: 'Pending permits' },
+  scheduled_for_work:   { bg: '#E6F1FB', text: '#0C447C', label: 'Scheduled for work' },
+  work_in_progress:     { bg: '#EEEDFE', text: '#3C3489', label: 'Work in progress' },
+  completed:            { bg: '#EAF3DE', text: '#27500A', label: 'Completed' },
+  lost_opportunity:     { bg: '#FCEBEB', text: '#501313', label: 'Lost opportunity' },
 };
 
 const CREW_STYLES = {
@@ -46,7 +46,7 @@ function formatDate(dateStr) {
 }
 
 export default function ProspectCard({ prospect }) {
-  const stageStyle = STAGE_STYLES[prospect.stage] || STAGE_STYLES.initial_contact;
+  const stageStyle = STAGE_STYLES[prospect.stage] || STAGE_STYLES.request_site_visit;
   const crewStyle = prospect.crew_assignment
     ? CREW_STYLES[prospect.crew_assignment]
     : { bg: '#F3F4F6', text: '#6B7280', label: 'Unassigned' };
