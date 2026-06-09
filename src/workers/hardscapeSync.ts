@@ -4,7 +4,8 @@ import { config } from '../config';
 import { pool } from '../db/pool';
 import { getConfigValue } from '../db/queries';
 import { bot } from '../telegram/bot';
-import { addProspectComment, createProspect } from '../db/hardscapeQueries';
+import { addProspectComment, upsertDetectedProspect } from '../db/hardscapeQueries';
+import { detectHardscapeJobs, stageForStatus } from '../services/hardscapeDetection';
 import logger from '../logger';
 
 // ---------------------------------------------------------------------------
@@ -19,39 +20,22 @@ const SM8_HEADERS = {
 
 const GORAN_CHAT_ID = 1996235953;
 
-const HARDSCAPE_ACCOUNT_CODE = '4230';
-
 // ---------------------------------------------------------------------------
-// JOB 1 — Detect new hardscape quotes (top of every hour)
+// JOB 1 — Sync hardscape jobs from SM8 (top of every hour)
+//   • Refresh data fields (client name, scope, quoted total, SM8 status) for
+//     every prospect linked to a detected job. Stage, crew, assigned_to, and
+//     notes are NEVER touched — those are manually controlled.
+//   • Auto-create a prospect for any new 4230 job that isn't tracked yet,
+//     setting the initial stage from the SM8 status (skip-list honoured).
 // ---------------------------------------------------------------------------
 
-async function detectNewHardscapeQuotes(): Promise<void> {
-  logger.info({ event: 'hardscape_detect_start' });
+async function syncHardscapeJobs(): Promise<void> {
+  logger.info({ event: 'hardscape_sync_jobs_start' });
 
   try {
-    // Fetch all Quote-status jobs from SM8
-    const jobsRes = await axios.get(`${SM8_BASE}/job.json`, {
-      headers: SM8_HEADERS,
-      params: { status: 'Quote' },
-      timeout: 15000,
-    });
-    const allQuotes: Array<{
-      uuid: string;
-      company_uuid: string;
-      generated_job_id?: string;
-      job_description?: string;
-      date?: string;
-    }> = jobsRes.data || [];
+    const jobs = await detectHardscapeJobs();
 
-    // Filter: created within last 48 hours
-    const cutoff = new Date();
-    cutoff.setHours(cutoff.getHours() - 48);
-    const recentQuotes = allQuotes.filter((j) => {
-      if (!j.date) return false;
-      return new Date(j.date) >= cutoff;
-    });
-
-    // Load skip list from config_store
+    // Skip list: jobs the user explicitly excluded from auto-add.
     let skipUuids: string[] = [];
     try {
       const skipJson = await getConfigValue('hardscape_skip_jobs');
@@ -60,97 +44,57 @@ async function detectNewHardscapeQuotes(): Promise<void> {
       // invalid JSON — treat as empty
     }
 
-    // Load existing prospect UUIDs
+    // Which job UUIDs already exist as prospects?
     const existingRes = await pool.query(
       'SELECT sm8_job_uuid FROM hardscape_prospects WHERE sm8_job_uuid IS NOT NULL'
     );
-    const existingUuids = new Set(existingRes.rows.map((r: { sm8_job_uuid: string }) => r.sm8_job_uuid));
-
-    // Filter to jobs that need checking (not already tracked or skipped)
-    const candidates = recentQuotes.filter(
-      (j) => !existingUuids.has(j.uuid) && !skipUuids.includes(j.uuid)
+    const existingUuids = new Set(
+      existingRes.rows.map((r: { sm8_job_uuid: string }) => r.sm8_job_uuid)
     );
 
-    if (candidates.length === 0) {
-      logger.info({ event: 'hardscape_detect_complete', quotes_checked: recentQuotes.length, detected: 0 });
-      return;
-    }
+    let created = 0;
+    let refreshed = 0;
 
-    // Fetch all job materials once and index by job_uuid
-    let allMaterials: Array<{ job_uuid: string; name?: string; item_code?: string }> = [];
-    try {
-      const matRes = await axios.get(`${SM8_BASE}/jobmaterial.json`, {
-        headers: SM8_HEADERS,
-        timeout: 15000,
-      });
-      allMaterials = matRes.data || [];
-    } catch (err) {
-      logger.error({
-        event: 'hardscape_detect_materials_error',
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    for (const job of jobs) {
+      const isNew = !existingUuids.has(job.sm8_job_uuid);
 
-    const materialsByJob = new Map<string, typeof allMaterials>();
-    for (const mat of allMaterials) {
-      const list = materialsByJob.get(mat.job_uuid) || [];
-      list.push(mat);
-      materialsByJob.set(mat.job_uuid, list);
-    }
-
-    let detected = 0;
-
-    for (const job of candidates) {
-      // Check if any job material has item code 4230
-      const jobMats = materialsByJob.get(job.uuid) || [];
-      const isHardscape = jobMats.some(
-        (m) => m.item_code === HARDSCAPE_ACCOUNT_CODE ||
-               (m.name || '').includes(HARDSCAPE_ACCOUNT_CODE)
-      );
-      if (!isHardscape) continue;
-
-      // Look up company name
-      let clientName = 'Unknown Client';
-      try {
-        const compRes = await axios.get(`${SM8_BASE}/company/${job.company_uuid}.json`, {
-          headers: SM8_HEADERS,
-          timeout: 10000,
-        });
-        clientName = compRes.data?.name || clientName;
-      } catch {
-        // Use default name
-      }
-
-      const jobNumber = job.generated_job_id || job.uuid.slice(0, 8);
+      // Never auto-create a job the user chose to skip. Existing prospects are
+      // always refreshed (data fields only), regardless of the skip list.
+      if (isNew && skipUuids.includes(job.sm8_job_uuid)) continue;
 
       try {
-        await createProspect({
-          sm8_client_uuid: job.company_uuid,
-          sm8_client_name: clientName,
-          sm8_job_uuid: job.uuid,
-          sm8_job_number: jobNumber,
-          stage: 'quote_sent',
-        });
-
-        await bot.sendMessage(
-          GORAN_CHAT_ID,
-          `🏗️ Job #${jobNumber} — ${clientName} added to the Hardscape Pipeline.`
-        );
-        detected++;
-        logger.info({ event: 'hardscape_quote_auto_added', job_uuid: job.uuid, client: clientName });
+        const result = await upsertDetectedProspect(job, stageForStatus(job.sm8_status));
+        if (result === 'inserted') {
+          created++;
+          try {
+            await bot.sendMessage(
+              GORAN_CHAT_ID,
+              `🏗️ Job #${job.sm8_job_number} — ${job.sm8_client_name} added to the Hardscape Pipeline.`
+            );
+          } catch {
+            // notification failure is non-fatal
+          }
+          logger.info({
+            event: 'hardscape_prospect_auto_added',
+            job_uuid: job.sm8_job_uuid,
+            client: job.sm8_client_name,
+          });
+        } else {
+          refreshed++;
+        }
       } catch (err) {
         logger.error({
-          event: 'hardscape_detect_add_error',
-          job_uuid: job.uuid,
+          event: 'hardscape_sync_job_error',
+          job_uuid: job.sm8_job_uuid,
           error: err instanceof Error ? err.message : String(err),
         });
       }
     }
 
-    logger.info({ event: 'hardscape_detect_complete', quotes_checked: recentQuotes.length, detected });
+    logger.info({ event: 'hardscape_sync_jobs_complete', detected: jobs.length, created, refreshed });
   } catch (err) {
     logger.error({
-      event: 'hardscape_detect_error',
+      event: 'hardscape_sync_jobs_error',
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -251,10 +195,10 @@ async function syncJobActivities(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function startHardscapeSync(): void {
-  // Job 1 — detect new hardscape quotes (top of every hour)
+  // Job 1 — sync hardscape jobs: refresh data + auto-create new (top of every hour)
   cron.schedule('0 * * * *', () => {
-    detectNewHardscapeQuotes().catch((err) =>
-      logger.error({ event: 'hardscape_detect_cron_error', error: String(err) })
+    syncHardscapeJobs().catch((err) =>
+      logger.error({ event: 'hardscape_sync_jobs_cron_error', error: String(err) })
     );
   }, { timezone: 'America/Chicago' });
 
@@ -270,5 +214,5 @@ export function startHardscapeSync(): void {
     logger.error({ event: 'hardscape_activity_startup_error', error: String(err) })
   );
 
-  logger.info({ event: 'hardscape_sync_started', jobs: ['detect_quotes@:00', 'sync_activities@:05'] });
+  logger.info({ event: 'hardscape_sync_started', jobs: ['sync_jobs@:00', 'sync_activities@:05'] });
 }

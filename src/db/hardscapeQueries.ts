@@ -38,6 +38,64 @@ export async function createProspect(data: {
   return result.rows[0];
 }
 
+/**
+ * Upsert a prospect from a detected ServiceM8 hardscape job, keyed on
+ * sm8_job_uuid. For an EXISTING row this refreshes ONLY the data fields
+ * (client name, scope, quoted total, SM8 status) — it NEVER touches stage,
+ * crew_assignment, assigned_to, or notes, which are manually controlled.
+ * For a NEW row it inserts with the supplied stage (mapped from SM8 status).
+ * Returns whether a row was inserted or an existing one was updated.
+ */
+export async function upsertDetectedProspect(
+  job: {
+    sm8_client_uuid: string;
+    sm8_client_name: string;
+    sm8_job_uuid: string;
+    sm8_job_number: string;
+    sm8_status: string;
+    scope_summary: string;
+    quoted_total: number;
+  },
+  newStage: ProspectStage
+): Promise<'inserted' | 'updated'> {
+  const existing = await pool.query(
+    'SELECT id FROM hardscape_prospects WHERE sm8_job_uuid = $1',
+    [job.sm8_job_uuid]
+  );
+
+  if (existing.rows.length > 0) {
+    await pool.query(
+      `UPDATE hardscape_prospects
+       SET sm8_client_name = $1, scope_summary = $2, quoted_total = $3,
+           sm8_status = $4, sm8_last_synced = NOW(), updated_at = NOW()
+       WHERE sm8_job_uuid = $5`,
+      [job.sm8_client_name, job.scope_summary, job.quoted_total, job.sm8_status, job.sm8_job_uuid]
+    );
+    return 'updated';
+  }
+
+  const inserted = await pool.query(
+    `INSERT INTO hardscape_prospects
+       (sm8_client_uuid, sm8_client_name, sm8_job_uuid, sm8_job_number, stage,
+        scope_summary, quoted_total, sm8_status, sm8_last_synced)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+     ON CONFLICT (sm8_job_uuid) WHERE sm8_job_uuid IS NOT NULL DO NOTHING
+     RETURNING id`,
+    [
+      job.sm8_client_uuid,
+      job.sm8_client_name,
+      job.sm8_job_uuid,
+      job.sm8_job_number,
+      newStage,
+      job.scope_summary,
+      job.quoted_total,
+      job.sm8_status,
+    ]
+  );
+
+  return inserted.rows.length > 0 ? 'inserted' : 'updated';
+}
+
 export async function updateProspectStage(
   id: number,
   stage: ProspectStage,

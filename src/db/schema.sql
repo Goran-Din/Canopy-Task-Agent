@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS hardscape_prospects (
   scheduled_start     DATE,
   client_folder_url   TEXT,
   notes               TEXT,
+  scope_summary       TEXT,
+  quoted_total        NUMERIC(12,2),
+  sm8_status          VARCHAR(30),
   sm8_last_synced     TIMESTAMPTZ,
   stage_updated_at    TIMESTAMPTZ DEFAULT NOW(),
   created_at          TIMESTAMPTZ DEFAULT NOW(),
@@ -103,4 +106,7 @@ CREATE TABLE IF NOT EXISTS hardscape_prospects (
 
 CREATE INDEX IF NOT EXISTS idx_prospects_crew ON hardscape_prospects(crew_assignment);
 CREATE INDEX IF NOT EXISTS idx_prospects_sm8_job ON hardscape_prospects(sm8_job_uuid);
+-- Dedupe guard: at most one prospect per ServiceM8 job (NULLs allowed for manual rows)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prospects_sm8_job_uuid
+  ON hardscape_prospects (sm8_job_uuid) WHERE sm8_job_uuid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prospects_stage ON hardscape_prospects(stage);
