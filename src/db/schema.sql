@@ -115,3 +115,75 @@ CREATE INDEX IF NOT EXISTS idx_prospects_sm8_job ON hardscape_prospects(sm8_job_
 CREATE UNIQUE INDEX IF NOT EXISTS uq_prospects_sm8_job_uuid
   ON hardscape_prospects (sm8_job_uuid) WHERE sm8_job_uuid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prospects_stage ON hardscape_prospects(stage);
+
+-- Prospect comments: per-prospect activity log (manual notes + ServiceM8 activity sync).
+CREATE TABLE IF NOT EXISTS prospect_comments (
+  id                SERIAL PRIMARY KEY,
+  prospect_id       INTEGER NOT NULL REFERENCES hardscape_prospects(id) ON DELETE CASCADE,
+  source            VARCHAR(20) NOT NULL,
+  author            VARCHAR(100),
+  content           TEXT NOT NULL,
+  sm8_activity_uuid VARCHAR(100),
+  editable          BOOLEAN DEFAULT false,
+  activity_date     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_prospect ON prospect_comments(prospect_id);
+CREATE INDEX IF NOT EXISTS idx_comments_sm8_uuid ON prospect_comments(sm8_activity_uuid);
+
+-- Crew schedule: hardscape crew (HP#1/HP#2) bookings against a prospect.
+CREATE TABLE IF NOT EXISTS crew_schedule (
+  id             SERIAL PRIMARY KEY,
+  prospect_id    INTEGER NOT NULL REFERENCES hardscape_prospects(id) ON DELETE CASCADE,
+  crew           VARCHAR(20) NOT NULL,
+  start_date     DATE NOT NULL,
+  estimated_days INTEGER NOT NULL DEFAULT 1,
+  actual_days    INTEGER,
+  status         VARCHAR(20) NOT NULL DEFAULT 'scheduled',
+  delay_reason   TEXT,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW(),
+  crew_size      INTEGER DEFAULT 2,
+  crew_members   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedule_crew ON crew_schedule(crew);
+CREATE INDEX IF NOT EXISTS idx_schedule_date ON crew_schedule(start_date);
+CREATE INDEX IF NOT EXISTS idx_schedule_prospect ON crew_schedule(prospect_id);
+
+-- Invoice cache: Xero invoice status per ServiceM8 job (landscape + hardscape), drives the badges.
+CREATE TABLE IF NOT EXISTS invoice_cache (
+  id              SERIAL PRIMARY KEY,
+  sm8_job_uuid    VARCHAR(100) NOT NULL,
+  sm8_client_name VARCHAR(200) NOT NULL,
+  division        VARCHAR(20) NOT NULL,
+  xero_invoice_id VARCHAR(100),
+  invoice_number  VARCHAR(50),
+  invoice_amount  NUMERIC(10,2),
+  invoice_status  VARCHAR(30) DEFAULT 'not_invoiced',
+  due_date        DATE,
+  paid_date       DATE,
+  last_synced_at  TIMESTAMPTZ DEFAULT NOW(),
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_cache_job ON invoice_cache(sm8_job_uuid);
+CREATE INDEX IF NOT EXISTS idx_invoice_cache_client ON invoice_cache(sm8_client_name);
+CREATE INDEX IF NOT EXISTS idx_invoice_cache_division ON invoice_cache(division);
+CREATE INDEX IF NOT EXISTS idx_invoice_cache_status ON invoice_cache(invoice_status);
+
+-- Job comments: one editable note per ServiceM8 job (landscape + hardscape); upserted on sm8_job_uuid.
+CREATE TABLE IF NOT EXISTS job_comments (
+  id              SERIAL PRIMARY KEY,
+  sm8_job_uuid    VARCHAR(100) NOT NULL,
+  sm8_client_name VARCHAR(200),
+  division        VARCHAR(20) NOT NULL,
+  comment_text    TEXT NOT NULL,
+  created_by      BIGINT REFERENCES users(telegram_id),
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_comments_job ON job_comments(sm8_job_uuid);
+CREATE INDEX IF NOT EXISTS idx_job_comments_division ON job_comments(division);
