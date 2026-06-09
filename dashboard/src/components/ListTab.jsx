@@ -199,7 +199,7 @@ export default function ListTab() {
     let rows = projects.filter((p) => {
       if (search) {
         const q = search.toLowerCase();
-        const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''} ${p.design_number || ''}`.toLowerCase();
+        const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''} ${p.design_number || ''} ${p.job_address || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (statusFilter !== 'all' && p.stage !== statusFilter) return false;
@@ -250,7 +250,7 @@ export default function ListTab() {
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search customer, job #, design #..."
+          placeholder="Search customer, address, job #, design #..."
           className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-teal-500 w-56"
         />
         <select
