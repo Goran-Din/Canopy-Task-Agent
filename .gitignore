@@ -6,3 +6,6 @@ logs/
 !.env.example
 *.log
 config/
+
+# Generated report outputs (created by scripts/hardscape-report.ts)
+reports/*.xlsx
