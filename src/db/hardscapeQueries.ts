@@ -40,11 +40,12 @@ export async function createProspect(data: {
 
 /**
  * Upsert a prospect from a detected ServiceM8 hardscape job, keyed on
- * sm8_job_uuid. For an EXISTING row this refreshes ONLY the SM8-sourced data
- * fields (client name, scope, quoted total, SM8 status, site address) — it
- * NEVER touches stage, crew_assignment, assigned_to, notes, or design_number,
- * which are manually controlled.
- * For a NEW row it inserts with the supplied stage (mapped from SM8 status).
+ * sm8_job_uuid. For an EXISTING row this refreshes ONLY the SM8/detection-sourced
+ * data fields (client name, scope, quoted total, SM8 status, site address,
+ * matched_by) — it NEVER touches stage, crew_assignment, assigned_to, notes,
+ * design_number, hidden, hidden_reason, or hidden_at, which are manually
+ * controlled. For a NEW row it inserts with the supplied stage (mapped from SM8
+ * status) and the detected matched_by signals.
  * Returns whether a row was inserted or an existing one was updated.
  */
 export async function upsertDetectedProspect(
@@ -57,6 +58,7 @@ export async function upsertDetectedProspect(
     scope_summary: string;
     quoted_total: number;
     job_address: string;
+    matched_by: string[];
   },
   newStage: ProspectStage
 ): Promise<'inserted' | 'updated'> {
@@ -69,9 +71,10 @@ export async function upsertDetectedProspect(
     await pool.query(
       `UPDATE hardscape_prospects
        SET sm8_client_name = $1, scope_summary = $2, quoted_total = $3,
-           sm8_status = $4, job_address = $5, sm8_last_synced = NOW(), updated_at = NOW()
-       WHERE sm8_job_uuid = $6`,
-      [job.sm8_client_name, job.scope_summary, job.quoted_total, job.sm8_status, job.job_address, job.sm8_job_uuid]
+           sm8_status = $4, job_address = $5, matched_by = $6,
+           sm8_last_synced = NOW(), updated_at = NOW()
+       WHERE sm8_job_uuid = $7`,
+      [job.sm8_client_name, job.scope_summary, job.quoted_total, job.sm8_status, job.job_address, job.matched_by, job.sm8_job_uuid]
     );
     return 'updated';
   }
@@ -79,8 +82,8 @@ export async function upsertDetectedProspect(
   const inserted = await pool.query(
     `INSERT INTO hardscape_prospects
        (sm8_client_uuid, sm8_client_name, sm8_job_uuid, sm8_job_number, stage,
-        scope_summary, quoted_total, sm8_status, job_address, sm8_last_synced)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        scope_summary, quoted_total, sm8_status, job_address, matched_by, sm8_last_synced)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
      ON CONFLICT (sm8_job_uuid) WHERE sm8_job_uuid IS NOT NULL DO NOTHING
      RETURNING id`,
     [
@@ -93,6 +96,7 @@ export async function upsertDetectedProspect(
       job.quoted_total,
       job.sm8_status,
       job.job_address,
+      job.matched_by,
     ]
   );
 

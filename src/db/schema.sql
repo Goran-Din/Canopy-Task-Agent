@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS hardscape_prospects (
   quoted_total        NUMERIC(12,2),
   sm8_status          VARCHAR(30),
   job_address         TEXT,
+  matched_by          TEXT[],  -- which detection signals fired: 'creator','category','itemcode'
   design_number       VARCHAR(50),
   hidden              BOOLEAN NOT NULL DEFAULT false,
   hidden_reason       TEXT,

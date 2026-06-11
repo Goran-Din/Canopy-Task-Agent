@@ -30,9 +30,12 @@ async function main(): Promise<void> {
   let inserted = 0;
   let updated = 0;
   const statusCounts: Record<string, number> = {};
+  const matchedByCounts: Record<string, number> = {};
 
   for (const job of jobs) {
     statusCounts[job.sm8_status] = (statusCounts[job.sm8_status] || 0) + 1;
+    const mbKey = job.matched_by.join(' + ') || '(none)';
+    matchedByCounts[mbKey] = (matchedByCounts[mbKey] || 0) + 1;
     try {
       const result = await upsertDetectedProspect(job, stageForStatus(job.sm8_status));
       if (result === 'inserted') {
@@ -52,14 +55,31 @@ async function main(): Promise<void> {
     console.log(`  ${status.padEnd(14)} ${count}`);
   }
 
+  console.log('\nMatched-by breakdown of detected jobs:');
+  for (const [key, count] of Object.entries(matchedByCounts).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${key.padEnd(30)} ${count}`);
+  }
+
   console.log(`\nSeed complete: ${inserted} inserted, ${updated} refreshed, ${jobs.length} detected.`);
+
+  const totalRow = await pool.query('SELECT COUNT(*) AS n FROM hardscape_prospects');
+  console.log(`\nTotal projects after import: ${totalRow.rows[0].n}`);
 
   const finalCounts = await pool.query(
     'SELECT stage, COUNT(*) FROM hardscape_prospects GROUP BY stage ORDER BY COUNT(*) DESC'
   );
-  console.log('\nProspect counts by stage:');
+  console.log('\nProspect counts by stage (all rows):');
   for (const row of finalCounts.rows) {
     console.log(`  ${String(row.stage).padEnd(20)} ${row.count}`);
+  }
+
+  const mbRows = await pool.query(
+    `SELECT COALESCE(array_to_string(matched_by, ' + '), '(null)') AS mb, COUNT(*)
+     FROM hardscape_prospects GROUP BY mb ORDER BY COUNT(*) DESC`
+  );
+  console.log('\nProspect counts by matched_by (all rows):');
+  for (const row of mbRows.rows) {
+    console.log(`  ${String(row.mb).padEnd(30)} ${row.count}`);
   }
 
   await pool.end();
