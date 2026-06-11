@@ -90,6 +90,17 @@ function StatusSelect({ value, onChange, disabled }) {
   );
 }
 
+// Read-only ServiceM8 status — muted grey badge, distinct from the editable
+// pipeline Status dropdown. Shows a subtle dash when empty.
+function Sm8StatusBadge({ value }) {
+  if (!value) return <span className="text-gray-300">—</span>;
+  return (
+    <span className="inline-block rounded-full bg-gray-100 text-gray-500 text-xs font-medium px-2 py-1 whitespace-nowrap">
+      {value}
+    </span>
+  );
+}
+
 function CrewSelect({ value, onChange, disabled }) {
   return (
     <select
@@ -297,6 +308,9 @@ function MobileCard({ p, saving, onPatch, onHide, onUnhide }) {
       )}
 
       <div className="mt-3 grid grid-cols-[78px_1fr] gap-y-2 gap-x-2 items-center text-xs">
+        <CardRow label="ServiceM8 Status">
+          <Sm8StatusBadge value={p.sm8_status} />
+        </CardRow>
         <CardRow label="Status">
           <StatusSelect value={p.stage} disabled={saving} onChange={(stage) => onPatch(p.id, { stage })} />
         </CardRow>
@@ -636,6 +650,7 @@ export default function ListTab() {
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('customer')}>Customer{sortArrow('customer')}</th>
                 <th className="py-2.5 px-3 font-medium">Design #</th>
                 <th className="py-2.5 px-3 font-medium">Scope</th>
+                <th className="py-2.5 px-3 font-medium">ServiceM8 Status</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('status')}>Status{sortArrow('status')}</th>
                 <th className="py-2.5 px-3 font-medium">Crew</th>
                 <th className="py-2.5 px-3 font-medium">Invoice</th>
@@ -689,6 +704,9 @@ export default function ListTab() {
                           widthClass="w-44"
                           onSave={(scope_summary) => patchProject(p.id, { scope_summary })}
                         />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <Sm8StatusBadge value={p.sm8_status} />
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
                         <StatusSelect
@@ -767,7 +785,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="hs-detail-row">
-                        <td colSpan={14} className="px-3 pb-3 pt-1">
+                        <td colSpan={15} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>
