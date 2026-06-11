@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { pool } from '../db/pool';
 import logger from '../logger';
 import { ProspectStage } from '../types';
+import { runHardscapeSync, isHardscapeSyncRunning } from '../workers/hardscapeSync';
+import { getConfigValue } from '../db/queries';
 
 const router = Router();
 
@@ -81,6 +83,47 @@ router.get('/dashboard/projects', async (req: Request, res: Response) => {
     res.json({ projects: result.rows });
   } catch (err) {
     logger.error({ event: 'dashboard_get_projects_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /dashboard/sync — on-demand one-way SM8 → dashboard pull.
+// Runs the SAME function the 2-hour cron runs (runHardscapeSync), behind the
+// single-instance lock. Read-only against ServiceM8 — no SM8 write endpoints.
+// ---------------------------------------------------------------------------
+
+router.post('/dashboard/sync', async (_req: Request, res: Response) => {
+  try {
+    const result = await runHardscapeSync();
+
+    if ('alreadyRunning' in result) {
+      // Another sync (manual or cron) is already in flight — don't start a second.
+      res.status(409).json({ alreadyRunning: true, message: 'A sync is already running.' });
+      return;
+    }
+
+    res.json({ ok: true, summary: result });
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Sync failed' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/sync-status — last-sync info + whether a sync is running now.
+// ---------------------------------------------------------------------------
+
+router.get('/dashboard/sync-status', async (_req: Request, res: Response) => {
+  try {
+    const raw = await getConfigValue('hardscape_last_sync');
+    let lastSync: unknown = null;
+    if (raw) {
+      try { lastSync = JSON.parse(raw); } catch { lastSync = null; }
+    }
+    res.json({ running: isHardscapeSyncRunning(), last_sync: lastSync });
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_status_error', error: err instanceof Error ? err.message : String(err) });
     res.status(500).json({ error: 'Internal server error' });
   }
 });

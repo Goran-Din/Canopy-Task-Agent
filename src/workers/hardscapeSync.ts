@@ -2,7 +2,7 @@ import axios from 'axios';
 import cron from 'node-cron';
 import { config } from '../config';
 import { pool } from '../db/pool';
-import { getConfigValue } from '../db/queries';
+import { getConfigValue, setConfigValue } from '../db/queries';
 import { bot } from '../telegram/bot';
 import { addProspectComment, upsertDetectedProspect } from '../db/hardscapeQueries';
 import { detectHardscapeJobs, stageForStatus } from '../services/hardscapeDetection';
@@ -33,75 +33,122 @@ const GORAN_CHAT_ID = 1996235953;
 //     setting the initial stage from the SM8 status (skip-list honoured).
 // ---------------------------------------------------------------------------
 
-async function syncHardscapeJobs(): Promise<void> {
+export interface HardscapeSyncSummary {
+  added: number;
+  refreshed: number;
+  total: number;
+  ranAt: string;   // ISO timestamp of completion
+}
+
+// Single-instance lock shared by the manual endpoint and the 2-hour cron, so
+// only one pull runs at a time (manual OR cron).
+let syncRunning = false;
+
+export function isHardscapeSyncRunning(): boolean {
+  return syncRunning;
+}
+
+/**
+ * Run the one-way SM8 → dashboard pull behind the single-instance lock. Returns
+ * the run summary, or { alreadyRunning: true } when a pull is already in flight.
+ * Invoked by BOTH the 2-hour cron and POST /dashboard/sync — never starts a
+ * second concurrent sync. This is read-only against ServiceM8 (no SM8 writes).
+ */
+export async function runHardscapeSync(): Promise<HardscapeSyncSummary | { alreadyRunning: true }> {
+  if (syncRunning) {
+    logger.info({ event: 'hardscape_sync_skipped_locked' });
+    return { alreadyRunning: true };
+  }
+  syncRunning = true;
+  try {
+    return await syncHardscapeJobs();
+  } finally {
+    syncRunning = false;
+  }
+}
+
+async function syncHardscapeJobs(): Promise<HardscapeSyncSummary> {
   logger.info({ event: 'hardscape_sync_jobs_start' });
 
+  const jobs = await detectHardscapeJobs();
+
+  // Skip list: jobs the user explicitly excluded from auto-add.
+  let skipUuids: string[] = [];
   try {
-    const jobs = await detectHardscapeJobs();
+    const skipJson = await getConfigValue('hardscape_skip_jobs');
+    if (skipJson) skipUuids = JSON.parse(skipJson);
+  } catch {
+    // invalid JSON — treat as empty
+  }
 
-    // Skip list: jobs the user explicitly excluded from auto-add.
-    let skipUuids: string[] = [];
+  // Which job UUIDs already exist as prospects?
+  const existingRes = await pool.query(
+    'SELECT sm8_job_uuid FROM hardscape_prospects WHERE sm8_job_uuid IS NOT NULL'
+  );
+  const existingUuids = new Set(
+    existingRes.rows.map((r: { sm8_job_uuid: string }) => r.sm8_job_uuid)
+  );
+
+  let created = 0;
+  let refreshed = 0;
+
+  for (const job of jobs) {
+    const isNew = !existingUuids.has(job.sm8_job_uuid);
+
+    // Never auto-create a job the user chose to skip. Existing prospects are
+    // always refreshed (data fields only), regardless of the skip list.
+    if (isNew && skipUuids.includes(job.sm8_job_uuid)) continue;
+
     try {
-      const skipJson = await getConfigValue('hardscape_skip_jobs');
-      if (skipJson) skipUuids = JSON.parse(skipJson);
-    } catch {
-      // invalid JSON — treat as empty
-    }
-
-    // Which job UUIDs already exist as prospects?
-    const existingRes = await pool.query(
-      'SELECT sm8_job_uuid FROM hardscape_prospects WHERE sm8_job_uuid IS NOT NULL'
-    );
-    const existingUuids = new Set(
-      existingRes.rows.map((r: { sm8_job_uuid: string }) => r.sm8_job_uuid)
-    );
-
-    let created = 0;
-    let refreshed = 0;
-
-    for (const job of jobs) {
-      const isNew = !existingUuids.has(job.sm8_job_uuid);
-
-      // Never auto-create a job the user chose to skip. Existing prospects are
-      // always refreshed (data fields only), regardless of the skip list.
-      if (isNew && skipUuids.includes(job.sm8_job_uuid)) continue;
-
-      try {
-        const result = await upsertDetectedProspect(job, stageForStatus(job.sm8_status));
-        if (result === 'inserted') {
-          created++;
-          try {
-            await bot.sendMessage(
-              GORAN_CHAT_ID,
-              `🏗️ Job #${job.sm8_job_number} — ${job.sm8_client_name} added to the Hardscape Pipeline.`
-            );
-          } catch {
-            // notification failure is non-fatal
-          }
-          logger.info({
-            event: 'hardscape_prospect_auto_added',
-            job_uuid: job.sm8_job_uuid,
-            client: job.sm8_client_name,
-          });
-        } else {
-          refreshed++;
+      const result = await upsertDetectedProspect(job, stageForStatus(job.sm8_status));
+      if (result === 'inserted') {
+        created++;
+        try {
+          await bot.sendMessage(
+            GORAN_CHAT_ID,
+            `🏗️ Job #${job.sm8_job_number} — ${job.sm8_client_name} added to the Hardscape Pipeline.`
+          );
+        } catch {
+          // notification failure is non-fatal
         }
-      } catch (err) {
-        logger.error({
-          event: 'hardscape_sync_job_error',
+        logger.info({
+          event: 'hardscape_prospect_auto_added',
           job_uuid: job.sm8_job_uuid,
-          error: err instanceof Error ? err.message : String(err),
+          client: job.sm8_client_name,
         });
+      } else {
+        refreshed++;
       }
+    } catch (err) {
+      logger.error({
+        event: 'hardscape_sync_job_error',
+        job_uuid: job.sm8_job_uuid,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
+  }
 
-    logger.info({ event: 'hardscape_sync_jobs_complete', detected: jobs.length, created, refreshed });
+  logger.info({ event: 'hardscape_sync_jobs_complete', detected: jobs.length, created, refreshed });
+
+  const summary: HardscapeSyncSummary = {
+    added: created,
+    refreshed,
+    total: jobs.length,
+    ranAt: new Date().toISOString(),
+  };
+
+  // Record the result for the dashboard's "last synced" display (every run —
+  // manual and cron). Non-fatal if the write fails.
+  try {
+    await setConfigValue('hardscape_last_sync', JSON.stringify(summary));
   } catch (err) {
     logger.error({
-      event: 'hardscape_sync_jobs_error',
+      event: 'hardscape_last_sync_write_error',
       error: err instanceof Error ? err.message : String(err),
     });
   }
+
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +249,7 @@ export function startHardscapeSync(): void {
   // Job 1 — one-way SM8 → dashboard pull: refresh SM8 reference fields + auto-create
   // new jobs. Runs every 2 hours (at :00). Reads from ServiceM8 only; never writes back.
   cron.schedule('0 */2 * * *', () => {
-    syncHardscapeJobs().catch((err) =>
+    runHardscapeSync().catch((err) =>
       logger.error({ event: 'hardscape_sync_jobs_cron_error', error: String(err) })
     );
   }, { timezone: 'America/Chicago' });

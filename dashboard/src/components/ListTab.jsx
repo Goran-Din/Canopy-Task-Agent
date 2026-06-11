@@ -31,6 +31,24 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// "Last synced" relative-time label for the sync button.
+function relativeTime(iso) {
+  if (!iso) return 'never';
+  const then = new Date(iso);
+  if (isNaN(then)) return 'never';
+  const secs = Math.round((Date.now() - then.getTime()) / 1000);
+  if (secs < 0) return 'just now';
+  if (secs < 45) return 'just now';
+  if (secs < 90) return '1 min ago';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 30) return `${days} day${days > 1 ? 's' : ''} ago`;
+  return then.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function buildInvoice(p) {
   if (!p.invoice_status) return null;
   return {
@@ -356,6 +374,10 @@ export default function ListTab() {
   const [sortDir, setSortDir] = useState('desc');
   const [expanded, setExpanded] = useState(null);
   const [savingId, setSavingId] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);   // { text, kind: 'ok'|'err' }
+  const [lastSync, setLastSync] = useState(null); // parsed config_store value
+  const [syncRunningRemote, setSyncRunningRemote] = useState(false);
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -396,6 +418,52 @@ export default function ListTab() {
       setSavingId(null);
     }
   }, [fetchProjects]);
+
+  // Poll last-sync info + whether a sync is currently running (cron or manual).
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/dashboard/sync-status', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setLastSync(data.last_sync || null);
+      setSyncRunningRemote(!!data.running);
+    } catch {
+      // non-fatal — leave previous state
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSyncStatus();
+    const interval = setInterval(fetchSyncStatus, 30000);
+    return () => clearInterval(interval);
+  }, [fetchSyncStatus]);
+
+  // Trigger the on-demand one-way pull. No aggressive client timeout — the full
+  // SM8 pull can take several seconds.
+  const runSync = useCallback(async () => {
+    if (syncing) return;
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await fetch('/dashboard/sync', { method: 'POST', credentials: 'include' });
+      if (res.status === 409) {
+        setSyncRunningRemote(true);
+        setSyncMsg({ text: 'Sync already in progress…', kind: 'err' });
+        return;
+      }
+      if (!res.ok) throw new Error('Sync failed');
+      const data = await res.json();
+      const s = data.summary || {};
+      setSyncMsg({ text: `Pulled ${s.added ?? 0} new, refreshed ${s.refreshed ?? 0}`, kind: 'ok' });
+      await fetchProjects();      // surface new/updated rows
+      await fetchSyncStatus();    // refresh "last synced"
+    } catch (err) {
+      console.error('Sync error:', err);
+      setSyncMsg({ text: 'Sync failed — try again', kind: 'err' });
+    } finally {
+      setSyncing(false);
+    }
+  }, [syncing, fetchProjects, fetchSyncStatus]);
 
   const hideProject = useCallback((id) => {
     const reason = window.prompt('Reason for hiding this project (required):');
@@ -464,6 +532,34 @@ export default function ListTab() {
 
   return (
     <div>
+      {/* Sync bar — on-demand one-way pull from ServiceM8 + last-synced indicator */}
+      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mb-3">
+        {syncMsg && (
+          <span className={`text-xs ${syncMsg.kind === 'ok' ? 'text-teal-700' : 'text-red-600'}`}>
+            {syncMsg.text}
+          </span>
+        )}
+        <span className="text-xs text-gray-400">
+          {syncRunningRemote && !syncing
+            ? 'Sync in progress…'
+            : `Last synced: ${relativeTime(lastSync?.ranAt)}`}
+        </span>
+        <button
+          onClick={runSync}
+          disabled={syncing || syncRunningRemote}
+          className="px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-600 bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+        >
+          {(syncing || syncRunningRemote) ? (
+            <>
+              <span className="animate-spin inline-block h-3 w-3 border-2 border-white border-t-transparent rounded-full" />
+              Syncing…
+            </>
+          ) : (
+            <>↻ Sync from ServiceM8</>
+          )}
+        </button>
+      </div>
+
       {/* Summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <SummaryCard label="Total projects" value={summary.total} />
