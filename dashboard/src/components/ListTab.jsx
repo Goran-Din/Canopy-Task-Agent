@@ -643,7 +643,6 @@ export default function ListTab() {
                 <th className="py-2.5 px-3 font-medium">Follow-Up</th>
                 <th className="py-2.5 px-3 font-medium">Possible Start</th>
                 <th className="py-2.5 px-3 font-medium">Actual Start</th>
-                <th className="py-2.5 px-3 font-medium">GDrive</th>
                 <th className="py-2.5 px-3 font-medium">Notes</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('date')}>Date{sortArrow('date')}</th>
                 <th className="hs-sticky-right py-2.5 px-3 font-medium text-right">Actions</th>
@@ -737,14 +736,6 @@ export default function ListTab() {
                         />
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
-                        <GDriveCell
-                          url={p.gdrive_url}
-                          label={p.gdrive_label}
-                          disabled={savingId === p.id}
-                          onSave={(patch) => patchProject(p.id, patch)}
-                        />
-                      </td>
-                      <td className="py-2 px-3 whitespace-nowrap">
                         <TextCell
                           value={p.notes}
                           disabled={savingId === p.id}
@@ -776,7 +767,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="hs-detail-row">
-                        <td colSpan={15} className="px-3 pb-3 pt-1">
+                        <td colSpan={14} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>
@@ -786,6 +777,13 @@ export default function ListTab() {
                               {p.sm8_status && (
                                 <div className="text-xs text-gray-400 mt-2">ServiceM8 status: {p.sm8_status}</div>
                               )}
+                              <div className="text-xs font-semibold text-gray-500 mb-1 mt-3">Google Drive Folder</div>
+                              <GDriveCell
+                                url={p.gdrive_url}
+                                label={p.gdrive_label}
+                                disabled={savingId === p.id}
+                                onSave={(patch) => patchProject(p.id, patch)}
+                              />
                             </div>
                             <div onClick={(e) => e.stopPropagation()}>
                               <div className="text-xs font-semibold text-gray-500 mb-1">
