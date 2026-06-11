@@ -24,24 +24,11 @@ const CREW_FILTERS = [
   { key: 'unassigned', label: 'Unassigned' },
 ];
 
-function formatCurrency(value) {
-  if (value == null || value === '') return '—';
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '—';
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-}
-
 function formatDate(dateStr) {
   if (!dateStr) return '—';
   const d = new Date(dateStr);
   if (isNaN(d)) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function scopeTag(scope) {
-  if (!scope) return 'No scope';
-  const firstWord = scope.split(/[,.]/)[0].trim();
-  return firstWord.length > 38 ? firstWord.slice(0, 38) + '…' : firstWord;
 }
 
 function buildInvoice(p) {
@@ -128,6 +115,137 @@ function DesignNumberCell({ value, disabled, onSave }) {
   );
 }
 
+// Inline editable single-line text cell (Scope, Notes) — saves on blur if changed.
+function TextCell({ value, disabled, onSave, placeholder = '—', widthClass = 'w-40' }) {
+  const [text, setText] = useState(value || '');
+  useEffect(() => { setText(value || ''); }, [value]);
+
+  const commit = () => {
+    const trimmed = text.trim();
+    if (trimmed === (value || '').trim()) return;
+    onSave(trimmed || null);
+  };
+
+  return (
+    <input
+      type="text"
+      value={text}
+      disabled={disabled}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      placeholder={placeholder}
+      className={`${widthClass} rounded-md text-xs border border-gray-200 outline-none px-2 py-1 bg-white text-gray-700 focus:border-teal-500 disabled:opacity-50`}
+    />
+  );
+}
+
+// Inline editable currency/number cell — saves quoted_total on blur if changed.
+function ValueCell({ value, disabled, onSave }) {
+  const orig = value == null || value === '' ? '' : String(value);
+  const [text, setText] = useState(orig);
+  useEffect(() => { setText(value == null || value === '' ? '' : String(value)); }, [value]);
+
+  const commit = () => {
+    const trimmed = text.trim();
+    if (trimmed === orig) return;
+    if (trimmed === '') { onSave(null); return; }
+    const n = Number(trimmed.replace(/[^0-9.\-]/g, ''));
+    if (!Number.isFinite(n)) { setText(orig); return; }
+    onSave(n);
+  };
+
+  return (
+    <div className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs pointer-events-none">$</span>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={text}
+        disabled={disabled}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        placeholder="—"
+        className="w-24 rounded-md text-xs border border-gray-200 outline-none pl-5 pr-2 py-1 bg-white text-gray-700 text-right focus:border-teal-500 disabled:opacity-50"
+      />
+    </div>
+  );
+}
+
+// Normalize a DATE coming back from Postgres/JSON to a yyyy-mm-dd input value.
+function toDateInput(v) {
+  if (!v) return '';
+  return String(v).split('T')[0];
+}
+
+// Inline date-picker cell (native) — PATCHes the date field on change.
+function DateCell({ value, disabled, onSave }) {
+  return (
+    <input
+      type="date"
+      value={toDateInput(value)}
+      disabled={disabled}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => onSave(e.target.value || null)}
+      className="rounded-md text-xs border border-gray-200 outline-none px-2 py-1 bg-white text-gray-600 focus:border-teal-500 disabled:opacity-50"
+    />
+  );
+}
+
+// GDrive folder cell — shows a clickable link (never the raw URL); prompts to
+// set/replace the URL (+ optional label). Empty -> "+ Add" affordance.
+function GDriveCell({ url, label, disabled, onSave }) {
+  const edit = (e) => {
+    e.stopPropagation();
+    const newUrl = window.prompt('Google Drive folder URL (leave blank to remove):', url || '');
+    if (newUrl === null) return; // cancelled
+    const trimmedUrl = newUrl.trim();
+    if (!trimmedUrl) {
+      onSave({ gdrive_url: null, gdrive_label: null });
+      return;
+    }
+    const newLabel = window.prompt('Optional short label / folder number (e.g. "35"):', label || '');
+    onSave({ gdrive_url: trimmedUrl, gdrive_label: (newLabel && newLabel.trim()) || null });
+  };
+
+  if (url) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-teal-700 hover:text-teal-900 underline truncate max-w-[120px]"
+          title={label || 'GDrive Folder'}
+        >
+          {label || 'GDrive Folder'}
+        </a>
+        <button
+          type="button"
+          onClick={edit}
+          disabled={disabled}
+          className="text-gray-300 hover:text-gray-500 disabled:opacity-50"
+          title="Edit GDrive link"
+        >
+          ✎
+        </button>
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={edit}
+      disabled={disabled}
+      className="text-xs text-gray-400 hover:text-teal-700 disabled:opacity-50"
+    >
+      + Add
+    </button>
+  );
+}
+
 // One labeled row inside a mobile card (module-scope so it stays mounted).
 function CardRow({ label, children }) {
   return (
@@ -139,7 +257,7 @@ function CardRow({ label, children }) {
 }
 
 // Stacked card used on narrow (<768px) screens — same controls as the table.
-function MobileCard({ p, saving, isOpen, onToggleScope, onPatch, onHide, onUnhide }) {
+function MobileCard({ p, saving, onPatch, onHide, onUnhide }) {
   const invoice = buildInvoice(p);
   return (
     <div
@@ -171,18 +289,31 @@ function MobileCard({ p, saving, isOpen, onToggleScope, onPatch, onHide, onUnhid
           <DesignNumberCell value={p.design_number} disabled={saving} onSave={(design_number) => onPatch(p.id, { design_number })} />
         </CardRow>
         <CardRow label="Scope">
-          <button type="button" onClick={() => onToggleScope(p.id)} className="text-left">
-            {isOpen ? (
-              <span className="text-gray-600 leading-relaxed">{p.scope_summary || '(no scope details)'}</span>
-            ) : (
-              <span className="inline-block bg-gray-100 text-gray-600 rounded px-2 py-0.5">{scopeTag(p.scope_summary)}</span>
-            )}
-          </button>
+          <TextCell value={p.scope_summary} disabled={saving} placeholder="Add scope…" widthClass="w-full"
+            onSave={(scope_summary) => onPatch(p.id, { scope_summary })} />
         </CardRow>
         <CardRow label="Invoice"><InvoiceBadge invoice={invoice} division="hardscape" /></CardRow>
-        <CardRow label="Value"><span className="font-medium text-gray-700">{formatCurrency(p.quoted_total)}</span></CardRow>
-        <CardRow label="Date"><span className="text-gray-500">{formatDate(p.created_at)}</span></CardRow>
+        <CardRow label="Value">
+          <ValueCell value={p.quoted_total} disabled={saving} onSave={(quoted_total) => onPatch(p.id, { quoted_total })} />
+        </CardRow>
+        <CardRow label="Follow-Up">
+          <DateCell value={p.follow_up_date} disabled={saving} onSave={(follow_up_date) => onPatch(p.id, { follow_up_date })} />
+        </CardRow>
+        <CardRow label="Possible Start">
+          <DateCell value={p.possible_start_date} disabled={saving} onSave={(possible_start_date) => onPatch(p.id, { possible_start_date })} />
+        </CardRow>
+        <CardRow label="Actual Start">
+          <DateCell value={p.actual_start_date} disabled={saving} onSave={(actual_start_date) => onPatch(p.id, { actual_start_date })} />
+        </CardRow>
+        <CardRow label="GDrive">
+          <GDriveCell url={p.gdrive_url} label={p.gdrive_label} disabled={saving} onSave={(patch) => onPatch(p.id, patch)} />
+        </CardRow>
         <CardRow label="Notes">
+          <TextCell value={p.notes} disabled={saving} placeholder="Add a note…" widthClass="w-full"
+            onSave={(notes) => onPatch(p.id, { notes })} />
+        </CardRow>
+        <CardRow label="Date"><span className="text-gray-500">{formatDate(p.created_at)}</span></CardRow>
+        <CardRow label="Job note">
           {p.sm8_job_uuid ? (
             <CommentField jobUuid={p.sm8_job_uuid} division="hardscape" initialComment={p.job_comment || ''} />
           ) : (
@@ -413,6 +544,11 @@ export default function ListTab() {
                 <th className="py-2.5 px-3 font-medium">Crew</th>
                 <th className="py-2.5 px-3 font-medium">Invoice</th>
                 <th className={`py-2.5 px-3 font-medium text-right ${headerBtn}`} onClick={() => toggleSort('value')}>Value{sortArrow('value')}</th>
+                <th className="py-2.5 px-3 font-medium">Follow-Up</th>
+                <th className="py-2.5 px-3 font-medium">Possible Start</th>
+                <th className="py-2.5 px-3 font-medium">Actual Start</th>
+                <th className="py-2.5 px-3 font-medium">GDrive</th>
+                <th className="py-2.5 px-3 font-medium">Notes</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('date')}>Date{sortArrow('date')}</th>
                 <th className="hs-sticky-right py-2.5 px-3 font-medium text-right">Actions</th>
               </tr>
@@ -450,10 +586,14 @@ export default function ListTab() {
                           onSave={(design_number) => patchProject(p.id, { design_number })}
                         />
                       </td>
-                      <td className="py-2 px-3 text-gray-500 max-w-[180px]" title={p.scope_summary || ''}>
-                        <span className="inline-block max-w-full truncate align-bottom bg-gray-100 text-gray-600 rounded px-2 py-0.5">
-                          {scopeTag(p.scope_summary)}
-                        </span>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <TextCell
+                          value={p.scope_summary}
+                          disabled={savingId === p.id}
+                          placeholder="Add scope…"
+                          widthClass="w-44"
+                          onSave={(scope_summary) => patchProject(p.id, { scope_summary })}
+                        />
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
                         <StatusSelect
@@ -472,8 +612,50 @@ export default function ListTab() {
                       <td className="py-2 px-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         <InvoiceBadge invoice={invoice} division="hardscape" />
                       </td>
-                      <td className="py-2 px-3 text-right font-medium text-gray-700 whitespace-nowrap">
-                        {formatCurrency(p.quoted_total)}
+                      <td className="py-2 px-3 text-right whitespace-nowrap">
+                        <ValueCell
+                          value={p.quoted_total}
+                          disabled={savingId === p.id}
+                          onSave={(quoted_total) => patchProject(p.id, { quoted_total })}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <DateCell
+                          value={p.follow_up_date}
+                          disabled={savingId === p.id}
+                          onSave={(follow_up_date) => patchProject(p.id, { follow_up_date })}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <DateCell
+                          value={p.possible_start_date}
+                          disabled={savingId === p.id}
+                          onSave={(possible_start_date) => patchProject(p.id, { possible_start_date })}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <DateCell
+                          value={p.actual_start_date}
+                          disabled={savingId === p.id}
+                          onSave={(actual_start_date) => patchProject(p.id, { actual_start_date })}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <GDriveCell
+                          url={p.gdrive_url}
+                          label={p.gdrive_label}
+                          disabled={savingId === p.id}
+                          onSave={(patch) => patchProject(p.id, patch)}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <TextCell
+                          value={p.notes}
+                          disabled={savingId === p.id}
+                          placeholder="Add a note…"
+                          widthClass="w-44"
+                          onSave={(notes) => patchProject(p.id, { notes })}
+                        />
                       </td>
                       <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{formatDate(p.created_at)}</td>
                       <td className="hs-sticky-right py-2 px-3 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
@@ -498,7 +680,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="hs-detail-row">
-                        <td colSpan={10} className="px-3 pb-3 pt-1">
+                        <td colSpan={15} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>
@@ -511,7 +693,7 @@ export default function ListTab() {
                             </div>
                             <div onClick={(e) => e.stopPropagation()}>
                               <div className="text-xs font-semibold text-gray-500 mb-1">
-                                Notes {p.comment_count ? `(${p.comment_count} activity)` : ''}
+                                Job note {p.comment_count ? `(${p.comment_count} activity)` : ''}
                               </div>
                               {p.sm8_job_uuid ? (
                                 <CommentField
@@ -545,8 +727,6 @@ export default function ListTab() {
               key={p.id}
               p={p}
               saving={savingId === p.id}
-              isOpen={expanded === p.id}
-              onToggleScope={(id) => setExpanded((cur) => (cur === id ? null : id))}
               onPatch={patchProject}
               onHide={hideProject}
               onUnhide={unhideProject}

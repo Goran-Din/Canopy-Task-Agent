@@ -104,11 +104,31 @@ CREATE TABLE IF NOT EXISTS hardscape_prospects (
   hidden              BOOLEAN NOT NULL DEFAULT false,
   hidden_reason       TEXT,
   hidden_at           TIMESTAMPTZ,
+  -- Spreadsheet-editable fields (dashboard-only; never written back to ServiceM8).
+  gdrive_url             TEXT,    -- pasted Google Drive folder URL (hidden in the UI)
+  gdrive_label           TEXT,    -- optional short label / folder number shown as the link text
+  follow_up_date         DATE,
+  possible_start_date    DATE,
+  actual_start_date      DATE,
+  -- When true, the user has manually edited this field; the SM8 pull must not overwrite it.
+  scope_is_manual        BOOLEAN NOT NULL DEFAULT false,
+  quoted_total_is_manual BOOLEAN NOT NULL DEFAULT false,
   sm8_last_synced     TIMESTAMPTZ,
   stage_updated_at    TIMESTAMPTZ DEFAULT NOW(),
   created_at          TIMESTAMPTZ DEFAULT NOW(),
   updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Idempotent column adds for already-existing hardscape_prospects tables.
+-- (CREATE TABLE IF NOT EXISTS above won't alter a pre-existing table, so mirror
+--  each spreadsheet-editable column here too — safe to run on every startup.)
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS gdrive_url             TEXT;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS gdrive_label           TEXT;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS follow_up_date         DATE;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS possible_start_date    DATE;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS actual_start_date      DATE;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS scope_is_manual        BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS quoted_total_is_manual BOOLEAN NOT NULL DEFAULT false;
 
 CREATE INDEX IF NOT EXISTS idx_prospects_crew ON hardscape_prospects(crew_assignment);
 CREATE INDEX IF NOT EXISTS idx_prospects_sm8_job ON hardscape_prospects(sm8_job_uuid);

@@ -14,7 +14,7 @@
 
 .hs-table {
   width: 100%;
-  min-width: 900px;            /* modest floor; desktop container is fluid, mobile uses cards */
+  min-width: 1500px;           /* wider now (15 columns); sticky Job#/Actions + scrollbar keep it usable */
   border-collapse: separate;   /* required so sticky cells keep an opaque background */
   border-spacing: 0;
 }

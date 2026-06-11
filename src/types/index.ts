@@ -132,6 +132,13 @@ export interface HardscapeProspect {
   scheduled_start?: string;
   client_folder_url?: string;
   notes?: string;
+  gdrive_url?: string;
+  gdrive_label?: string;
+  follow_up_date?: string;
+  possible_start_date?: string;
+  actual_start_date?: string;
+  scope_is_manual?: boolean;
+  quoted_total_is_manual?: boolean;
   sm8_last_synced?: string;
   stage_updated_at: string;
   created_at: string;

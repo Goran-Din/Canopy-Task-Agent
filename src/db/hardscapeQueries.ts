@@ -40,13 +40,20 @@ export async function createProspect(data: {
 
 /**
  * Upsert a prospect from a detected ServiceM8 hardscape job, keyed on
- * sm8_job_uuid. For an EXISTING row this refreshes ONLY the SM8/detection-sourced
- * data fields (client name, scope, quoted total, SM8 status, site address,
- * matched_by) — it NEVER touches stage, crew_assignment, assigned_to, notes,
- * design_number, hidden, hidden_reason, or hidden_at, which are manually
- * controlled. For a NEW row it inserts with the supplied stage (mapped from SM8
- * status) and the detected matched_by signals.
- * Returns whether a row was inserted or an existing one was updated.
+ * sm8_job_uuid. This is a ONE-WAY pull: it only reads from ServiceM8 and writes
+ * to hardscape_prospects — it never calls any ServiceM8 write endpoint.
+ *
+ * For an EXISTING row this refreshes ONLY the SM8/detection-sourced reference
+ * fields: sm8_client_name, sm8_status, job_address and matched_by ALWAYS; and
+ * scope_summary / quoted_total ONLY when their corresponding is_manual flag is
+ * false (i.e. the user hasn't edited that cell). It NEVER touches stage,
+ * crew_assignment, assigned_to, notes, design_number, hidden/hidden_reason/
+ * hidden_at, gdrive_url, gdrive_label, follow_up_date, possible_start_date or
+ * actual_start_date — those are manually controlled.
+ *
+ * For a NEW row it inserts with the supplied stage (mapped from SM8 status), the
+ * SM8 scope/quoted total (is_manual flags default false) and the matched_by
+ * signals. Returns whether a row was inserted or an existing one was updated.
  */
 export async function upsertDetectedProspect(
   job: {
@@ -70,7 +77,9 @@ export async function upsertDetectedProspect(
   if (existing.rows.length > 0) {
     await pool.query(
       `UPDATE hardscape_prospects
-       SET sm8_client_name = $1, scope_summary = $2, quoted_total = $3,
+       SET sm8_client_name = $1,
+           scope_summary = CASE WHEN scope_is_manual THEN scope_summary ELSE $2 END,
+           quoted_total  = CASE WHEN quoted_total_is_manual THEN quoted_total ELSE $3 END,
            sm8_status = $4, job_address = $5, matched_by = $6,
            sm8_last_synced = NOW(), updated_at = NOW()
        WHERE sm8_job_uuid = $7`,

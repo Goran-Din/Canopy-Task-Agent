@@ -61,6 +61,9 @@ router.get('/dashboard/projects', async (req: Request, res: Response) => {
         p.stage, p.crew_assignment, p.scope_summary, p.quoted_total, p.sm8_status,
         p.job_address, p.design_number,
         p.hidden, p.hidden_reason, p.hidden_at,
+        p.gdrive_url, p.gdrive_label,
+        p.follow_up_date, p.possible_start_date, p.actual_start_date,
+        p.scope_is_manual, p.quoted_total_is_manual,
         p.notes, p.scheduled_start, p.created_at, p.updated_at,
         u.name AS assigned_to_name,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount,
@@ -173,23 +176,49 @@ router.patch('/dashboard/prospects/:id', async (req: Request, res: Response) => 
     const { id } = req.params;
     const body = req.body;
 
-    // Allowed fields for update
+    // Allowed fields for update. All edits stay in Postgres — this handler
+    // NEVER writes back to ServiceM8 (the SM8 → dashboard flow is one-way).
     const allowedFields = [
       'sm8_client_name', 'sm8_client_uuid', 'sm8_job_uuid', 'sm8_job_number',
       'stage', 'notes', 'assigned_to', 'estimated_crew_days', 'crew_assignment',
       'scheduled_start', 'client_folder_url', 'design_number',
+      // Spreadsheet-editable fields
+      'scope_summary', 'quoted_total', 'gdrive_url', 'gdrive_label',
+      'follow_up_date', 'possible_start_date', 'actual_start_date',
     ];
 
     const setClauses: string[] = ['updated_at = NOW()'];
     const values: unknown[] = [];
     let paramIdx = 1;
 
+    // Treat empty strings as NULL for the nullable editable fields so the sync's
+    // is_manual gating and the date columns behave correctly when a cell is cleared.
+    const nullableEditable = new Set([
+      'scope_summary', 'quoted_total', 'gdrive_url', 'gdrive_label',
+      'follow_up_date', 'possible_start_date', 'actual_start_date',
+    ]);
+
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
+        const raw = body[field];
+        const value = nullableEditable.has(field) && (raw === '' || raw === null)
+          ? null
+          : raw;
         setClauses.push(`${field} = $${paramIdx}`);
-        values.push(body[field]);
+        values.push(value);
         paramIdx++;
       }
+    }
+
+    // Manual-edit flags: once the user sets scope/value it is "manual" and the
+    // SM8 pull must never overwrite it; clearing the cell hands control back to SM8.
+    if (body.scope_summary !== undefined) {
+      const cleared = body.scope_summary === '' || body.scope_summary === null;
+      setClauses.push(`scope_is_manual = ${cleared ? 'FALSE' : 'TRUE'}`);
+    }
+    if (body.quoted_total !== undefined) {
+      const cleared = body.quoted_total === '' || body.quoted_total === null;
+      setClauses.push(`quoted_total_is_manual = ${cleared ? 'FALSE' : 'TRUE'}`);
     }
 
     // If stage changed, also update stage_updated_at

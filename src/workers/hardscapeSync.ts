@@ -21,10 +21,14 @@ const SM8_HEADERS = {
 const GORAN_CHAT_ID = 1996235953;
 
 // ---------------------------------------------------------------------------
-// JOB 1 — Sync hardscape jobs from SM8 (top of every hour)
-//   • Refresh data fields (client name, scope, quoted total, SM8 status) for
-//     every prospect linked to a detected job. Stage, crew, assigned_to, and
-//     notes are NEVER touched — those are manually controlled.
+// JOB 1 — One-way SM8 → dashboard pull of hardscape jobs (every 2 hours).
+//   • READS from ServiceM8 and writes only to hardscape_prospects — it never
+//     calls any ServiceM8 write endpoint.
+//   • Refresh SM8 reference fields (client name, SM8 status, address) for every
+//     prospect linked to a detected job; scope/quoted total refresh ONLY while
+//     their is_manual flag is false (see upsertDetectedProspect). Stage, crew,
+//     assigned_to, notes, design #, hidden flags, GDrive + the date fields are
+//     NEVER touched — those are manually controlled.
 //   • Auto-create a prospect for any new 4230 job that isn't tracked yet,
 //     setting the initial stage from the SM8 status (skip-list honoured).
 // ---------------------------------------------------------------------------
@@ -195,8 +199,9 @@ async function syncJobActivities(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export function startHardscapeSync(): void {
-  // Job 1 — sync hardscape jobs: refresh data + auto-create new (top of every hour)
-  cron.schedule('0 * * * *', () => {
+  // Job 1 — one-way SM8 → dashboard pull: refresh SM8 reference fields + auto-create
+  // new jobs. Runs every 2 hours (at :00). Reads from ServiceM8 only; never writes back.
+  cron.schedule('0 */2 * * *', () => {
     syncHardscapeJobs().catch((err) =>
       logger.error({ event: 'hardscape_sync_jobs_cron_error', error: String(err) })
     );
@@ -214,5 +219,5 @@ export function startHardscapeSync(): void {
     logger.error({ event: 'hardscape_activity_startup_error', error: String(err) })
   );
 
-  logger.info({ event: 'hardscape_sync_started', jobs: ['sync_jobs@:00', 'sync_activities@:05'] });
+  logger.info({ event: 'hardscape_sync_started', jobs: ['sync_jobs@every-2h', 'sync_activities@:05'] });
 }
