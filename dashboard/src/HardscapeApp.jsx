@@ -117,9 +117,9 @@ export default function HardscapeApp() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-3 sm:px-4 py-3">
+      <div className="bg-white border-b border-gray-200 px-3 sm:px-4 py-3 shrink-0">
         <div className="max-w-screen-2xl mx-auto flex items-center justify-between">
           <div>
             <div className="text-lg font-bold text-gray-900">Hardscape Pipeline</div>
@@ -145,8 +145,13 @@ export default function HardscapeApp() {
         </div>
       </div>
 
-      {/* Content */}
-      <div className="max-w-screen-2xl mx-auto px-3 sm:px-4 py-4">
+      {/* Content — fills remaining viewport height. The List tab manages its own
+          internal scrolling (height-constrained table); other tabs scroll here. */}
+      <div
+        className={`flex-1 min-h-0 w-full max-w-screen-2xl mx-auto px-3 sm:px-4 py-4 ${
+          tab === 'list' ? 'flex flex-col' : 'overflow-y-auto'
+        }`}
+      >
         {tab === 'list' && <ListTab />}
         {tab === 'pipeline' && (
           <PipelineTab prospects={prospects} loading={loading} />

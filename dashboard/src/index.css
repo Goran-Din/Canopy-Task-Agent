@@ -1,16 +1,19 @@
 @import "tailwindcss";
 
-/* ─── Hardscape List: responsive table (sticky columns + always-visible scrollbar) ─── */
+/* ─── Hardscape List: height-constrained scroll box (sticky header + columns,
+       always-visible scrollbars on BOTH axes) ─── */
 .hs-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;                        /* both axes scroll INSIDE this box */
   scrollbar-width: thin;                 /* Firefox */
   scrollbar-color: #9ca3af #eef0f2;
 }
-.hs-scroll::-webkit-scrollbar { height: 10px; }
-.hs-scroll::-webkit-scrollbar-track { background: #eef0f2; border-radius: 0 0 0.75rem 0.75rem; }
+/* Persistent (non-overlay) scrollbars on both axes — width = vertical bar,
+   height = horizontal bar. */
+.hs-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.hs-scroll::-webkit-scrollbar-track { background: #eef0f2; }
 .hs-scroll::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 9999px; border: 2px solid #eef0f2; }
 .hs-scroll::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+.hs-scroll::-webkit-scrollbar-corner { background: #eef0f2; }
 
 .hs-table {
   width: 100%;
@@ -19,7 +22,14 @@
   border-spacing: 0;
 }
 .hs-table thead tr { background-color: #ffffff; }
-.hs-table thead th { border-bottom: 1px solid #f3f4f6; }
+/* Header row sticks to the top of the scroll box while rows scroll vertically. */
+.hs-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background-color: #ffffff;
+  border-bottom: 1px solid #f3f4f6;
+}
 .hs-table tbody tr { background-color: #ffffff; }
 .hs-table tbody tr:hover { background-color: #f9fafb; }
 .hs-table tbody tr.hs-row-expanded { background-color: #f9fafb; }

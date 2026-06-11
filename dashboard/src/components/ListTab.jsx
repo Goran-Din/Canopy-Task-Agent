@@ -545,9 +545,9 @@ export default function ListTab() {
   const headerBtn = 'cursor-pointer select-none hover:text-gray-700';
 
   return (
-    <div>
+    <div className="flex flex-col min-h-0 flex-1">
       {/* Sync bar — on-demand one-way pull from ServiceM8 + last-synced indicator */}
-      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mb-3">
+      <div className="shrink-0 flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mb-3">
         {syncMsg && (
           <span className={`text-xs ${syncMsg.kind === 'ok' ? 'text-teal-700' : 'text-red-600'}`}>
             {syncMsg.text}
@@ -575,7 +575,7 @@ export default function ListTab() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div className="shrink-0 grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <SummaryCard label="Total projects" value={summary.total} />
         <SummaryCard label="Open quotes" value={summary.openQuotes} accent="#633806" />
         <SummaryCard label="In production" value={summary.inProduction} accent="#0C447C" />
@@ -583,7 +583,7 @@ export default function ListTab() {
       </div>
 
       {/* Toolbar — stacks full-width on mobile, wraps inline on sm+ */}
-      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2 mb-3">
+      <div className="shrink-0 flex flex-col sm:flex-row sm:flex-wrap gap-2 mb-3">
         <input
           type="text"
           value={search}
@@ -640,9 +640,11 @@ export default function ListTab() {
         <div className="text-center text-gray-400 text-sm py-12">No projects match the current filters.</div>
       )}
 
-      {/* Desktop / tablet: scrollable table with pinned identity + actions columns */}
+      {/* Desktop / tablet: scrollable table with pinned identity + actions columns.
+          flex-1 + min-h-0 makes it fill the remaining viewport height and scroll
+          internally (both axes) instead of growing the page. */}
       {!loading && filtered.length > 0 && (
-        <div className="hidden md:block hs-scroll bg-white rounded-xl border border-gray-200">
+        <div className="hidden md:block hs-scroll flex-1 min-h-0 bg-white rounded-xl border border-gray-200">
           <table className="hs-table text-xs">
             <thead>
               <tr className="text-left text-gray-400">
@@ -831,9 +833,10 @@ export default function ListTab() {
         </div>
       )}
 
-      {/* Mobile (<768px): stacked cards, no horizontal scroll */}
+      {/* Mobile (<768px): stacked cards, no horizontal scroll. Scrolls internally
+          (flex-1 + min-h-0) within the height-constrained content column. */}
       {!loading && filtered.length > 0 && (
-        <div className="md:hidden space-y-3">
+        <div className="md:hidden flex-1 min-h-0 overflow-y-auto space-y-3">
           {filtered.map((p) => (
             <MobileCard
               key={p.id}
