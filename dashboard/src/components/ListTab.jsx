@@ -90,12 +90,21 @@ function StatusSelect({ value, onChange, disabled }) {
   );
 }
 
-// Read-only ServiceM8 status — muted grey badge, distinct from the editable
-// pipeline Status dropdown. Shows a subtle dash when empty.
+// Read-only ServiceM8 status — soft tinted badge colored by value, distinct from
+// the editable pipeline Status dropdown. Shows a subtle dash when empty.
+// Known statuses get a soft color; anything else falls back to neutral grey.
+const SM8_STATUS_STYLES = {
+  'Quote':        'bg-orange-100 text-orange-700',
+  'Work Order':   'bg-sky-100 text-sky-700',
+  'Completed':    'bg-green-100 text-green-700',
+  'Unsuccessful': 'bg-red-100 text-red-700',
+};
+
 function Sm8StatusBadge({ value }) {
   if (!value) return <span className="text-gray-300">—</span>;
+  const tint = SM8_STATUS_STYLES[value] || 'bg-gray-100 text-gray-500';
   return (
-    <span className="inline-block rounded-full bg-gray-100 text-gray-500 text-xs font-medium px-2 py-1 whitespace-nowrap">
+    <span className={`inline-block rounded-full ${tint} text-xs font-medium px-2 py-1 whitespace-nowrap`}>
       {value}
     </span>
   );
@@ -223,42 +232,105 @@ function DateCell({ value, disabled, onSave }) {
   );
 }
 
-// GDrive folder cell — shows a clickable link (never the raw URL); prompts to
-// set/replace the URL (+ optional label). Empty -> "+ Add" affordance.
+// GDrive folder cell — inline editable. Empty -> "+ Add link" button that opens
+// an inline URL bar (paste + OK/Cancel). Set -> a clickable "GDrive Folder" link
+// (raw URL hidden) plus edit/clear controls. URL alone is enough; label optional.
 function GDriveCell({ url, label, disabled, onSave }) {
-  const edit = (e) => {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(url || '');
+
+  const startEdit = (e) => {
     e.stopPropagation();
-    const newUrl = window.prompt('Google Drive folder URL (leave blank to remove):', url || '');
-    if (newUrl === null) return; // cancelled
-    const trimmedUrl = newUrl.trim();
-    if (!trimmedUrl) {
-      onSave({ gdrive_url: null, gdrive_label: null });
+    setText(url || '');
+    setEditing(true);
+  };
+  const cancel = (e) => {
+    if (e) e.stopPropagation();
+    setText(url || '');
+    setEditing(false);
+  };
+  const save = (e) => {
+    if (e) e.stopPropagation();
+    const trimmed = text.trim();
+    if (!trimmed) {
+      // Empty input: clear an existing link, otherwise just close.
+      if (url) onSave({ gdrive_url: null, gdrive_label: null });
+      setEditing(false);
       return;
     }
-    const newLabel = window.prompt('Optional short label / folder number (e.g. "35"):', label || '');
-    onSave({ gdrive_url: trimmedUrl, gdrive_label: (newLabel && newLabel.trim()) || null });
+    onSave({ gdrive_url: trimmed });
+    setEditing(false);
   };
+  const clear = (e) => {
+    e.stopPropagation();
+    onSave({ gdrive_url: null, gdrive_label: null });
+  };
+
+  if (editing) {
+    return (
+      <div className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="text"
+          autoFocus
+          value={text}
+          disabled={disabled}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save();
+            else if (e.key === 'Escape') cancel();
+          }}
+          placeholder="Paste folder URL"
+          className="w-44 rounded-md text-xs border border-gray-200 outline-none px-2 py-1 bg-white text-gray-700 focus:border-teal-500 disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={save}
+          disabled={disabled}
+          className="text-xs font-medium text-teal-700 hover:text-teal-900 disabled:opacity-50"
+        >
+          OK
+        </button>
+        <button
+          type="button"
+          onClick={cancel}
+          disabled={disabled}
+          className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
 
   if (url) {
     return (
-      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
         <a
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-teal-700 hover:text-teal-900 underline truncate max-w-[120px]"
+          className="text-teal-700 hover:text-teal-900 underline whitespace-nowrap"
           title={label || 'GDrive Folder'}
         >
           {label || 'GDrive Folder'}
         </a>
         <button
           type="button"
-          onClick={edit}
+          onClick={startEdit}
           disabled={disabled}
           className="text-gray-300 hover:text-gray-500 disabled:opacity-50"
-          title="Edit GDrive link"
+          title="Edit link"
         >
           ✎
+        </button>
+        <button
+          type="button"
+          onClick={clear}
+          disabled={disabled}
+          className="text-gray-300 hover:text-red-500 disabled:opacity-50"
+          title="Remove link"
+        >
+          ✕
         </button>
       </span>
     );
@@ -266,11 +338,11 @@ function GDriveCell({ url, label, disabled, onSave }) {
   return (
     <button
       type="button"
-      onClick={edit}
+      onClick={startEdit}
       disabled={disabled}
-      className="text-xs text-gray-400 hover:text-teal-700 disabled:opacity-50"
+      className="text-xs text-gray-400 hover:text-teal-700 disabled:opacity-50 whitespace-nowrap"
     >
-      + Add
+      + Add link
     </button>
   );
 }
@@ -651,6 +723,7 @@ export default function ListTab() {
                 <th className="hs-sticky-left py-2.5 px-3 font-medium">Job #</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('customer')}>Customer{sortArrow('customer')}</th>
                 <th className="py-2.5 px-3 font-medium">Design #</th>
+                <th className="py-2.5 px-3 font-medium">GDrive</th>
                 <th className="py-2.5 px-3 font-medium">Scope</th>
                 <th className="py-2.5 px-3 font-medium">ServiceM8 Status</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('status')}>Status{sortArrow('status')}</th>
@@ -696,6 +769,14 @@ export default function ListTab() {
                           value={p.design_number}
                           disabled={savingId === p.id}
                           onSave={(design_number) => patchProject(p.id, { design_number })}
+                        />
+                      </td>
+                      <td className="py-2 px-3 whitespace-nowrap">
+                        <GDriveCell
+                          url={p.gdrive_url}
+                          label={p.gdrive_label}
+                          disabled={savingId === p.id}
+                          onSave={(patch) => patchProject(p.id, patch)}
                         />
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
@@ -787,7 +868,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="hs-detail-row">
-                        <td colSpan={15} className="px-3 pb-3 pt-1">
+                        <td colSpan={16} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>
@@ -797,13 +878,6 @@ export default function ListTab() {
                               {p.sm8_status && (
                                 <div className="text-xs text-gray-400 mt-2">ServiceM8 status: {p.sm8_status}</div>
                               )}
-                              <div className="text-xs font-semibold text-gray-500 mb-1 mt-3">Google Drive Folder</div>
-                              <GDriveCell
-                                url={p.gdrive_url}
-                                label={p.gdrive_label}
-                                disabled={savingId === p.id}
-                                onSave={(patch) => patchProject(p.id, patch)}
-                              />
                             </div>
                             <div onClick={(e) => e.stopPropagation()}>
                               <div className="text-xs font-semibold text-gray-500 mb-1">
