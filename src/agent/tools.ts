@@ -332,6 +332,20 @@ export const toolDefinitions: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_prospect_status',
+    description: "Read-only status lookup for one hardscape prospect. Returns its pipeline stage, assigned crew, current job/schedule status (Scheduled / In Progress / Paused / Completed), the Needs Sealing and Needs Landscape follow-up flags, and the prospect's note thread (most recent first). Use to answer questions like 'where does [client] stand?', 'what notes do we have on [client]?', or 'does [client] need sealing/landscape?'. Matches by client name; if multiple prospects match, it returns the list so you can ask which one.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        client_name: {
+          type: 'string',
+          description: 'Client name to look up in the hardscape pipeline — partial match supported',
+        },
+      },
+      required: ['client_name'],
+    },
+  },
+  {
     name: 'get_job_address',
     description: 'Look up the address, client name, and status of a job by job number. Use when someone asks for the address of a job, where a job is located, or what address job #N is at.',
     input_schema: {
@@ -444,6 +458,20 @@ export const toolDefinitions: Anthropic.Tool[] = [
         },
       },
       required: ['job_uuid'],
+    },
+  },
+  {
+    name: 'list_due_reminders',
+    description: "Read-only list of open follow-up reminders due soon across ALL hardscape prospects, soonest due first (client name, Job #, due date, note; overdue ones flagged). Use to answer 'what needs follow-up this week?', 'what's due?', or 'any overdue follow-ups?'. Dates are evaluated in US Central.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        days_ahead: {
+          type: 'number',
+          description: 'Look-ahead window in days (includes overdue). Defaults to 7 (this week).',
+        },
+      },
+      required: [],
     },
   },
 ];

@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import RowMeta, { hasRowMeta } from './RowMeta';
+import { useNoteThread, NotePreview, NoteAddTrigger, NoteExpansion } from './NoteThread';
 
 const CREW_META = {
   hp1: { label: 'HP#1 Rigo Tello', color: '#6B7280' },
@@ -15,25 +17,84 @@ function toDateStr(d) {
   return d.toISOString().split('T')[0];
 }
 
+// Today's date as 'YYYY-MM-DD' in US Central, so "today" / "start of week"
+// don't drift against the viewer's local clock near midnight. 'en-CA' → ISO order.
+function todayInBusinessTz() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+// Accept a date-only string ('2026-06-17') or a full ISO timestamp
+// ('2026-06-17T07:00:00.000Z') and return just the 'YYYY-MM-DD' portion.
+function dateOnly(dateStr) {
+  if (!dateStr) return '';
+  return String(dateStr).split('T')[0];
+}
+
 function addDays(dateStr, n) {
-  const d = new Date(dateStr + 'T12:00:00');
+  const d = new Date(dateOnly(dateStr) + 'T12:00:00');
   d.setDate(d.getDate() + n);
   return toDateStr(d);
 }
 
 function daysBetween(a, b) {
-  const da = new Date(a + 'T12:00:00');
-  const db = new Date(b + 'T12:00:00');
+  const da = new Date(dateOnly(a) + 'T12:00:00');
+  const db = new Date(dateOnly(b) + 'T12:00:00');
   return Math.round((db - da) / 86400000);
 }
 
+// Beginning of the week (Sunday) containing dateStr.
+function startOfWeek(dateStr) {
+  const d = new Date(dateOnly(dateStr) + 'T12:00:00');
+  d.setDate(d.getDate() - d.getDay());
+  return toDateStr(d);
+}
+
+// Larger (later) of two YYYY-MM-DD strings.
+function maxDateStr(a, b) {
+  return a > b ? a : b;
+}
+
+const PAUSE_OUTLINE = '#F59E0B'; // amber
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Timeline band styling driven by job status:
+//   in_progress → solid crew color
+//   paused      → crew color + diagonal stripe + amber outline (visually distinct)
+//   scheduled   → lighter crew color (default)
+function bandStyleForStatus(crewColor, status) {
+  if (status === 'paused') {
+    return {
+      backgroundColor: crewColor,
+      backgroundImage:
+        'repeating-linear-gradient(45deg, rgba(255,255,255,0.30) 0, rgba(255,255,255,0.30) 4px, transparent 4px, transparent 9px)',
+      outline: `2px solid ${PAUSE_OUTLINE}`,
+      outlineOffset: '-2px',
+    };
+  }
+  if (status === 'in_progress') {
+    return { backgroundColor: crewColor };
+  }
+  return { backgroundColor: hexToRgba(crewColor, 0.55) }; // scheduled — lighter
+}
+
 function formatDateShort(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
+  const d = new Date(dateOnly(dateStr) + 'T12:00:00');
+  if (isNaN(d.getTime())) return 'Not scheduled';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatDateFull(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
+  const d = new Date(dateOnly(dateStr) + 'T12:00:00');
+  if (isNaN(d.getTime())) return 'Not scheduled';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -65,12 +126,20 @@ export default function CrewCalendar() {
   const [hp1Next, setHp1Next] = useState(null);
   const [hp2Next, setHp2Next] = useState(null);
   const [prospects, setProspects] = useState([]);
+  const [completedJobs, setCompletedJobs] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // View state
-  const todayStr = toDateStr(new Date());
-  const [viewStart, setViewStart] = useState(todayStr);
-  const DAY_COUNT = 30;
+  // Job list below the timeline
+  const [listView, setListView] = useState('active'); // 'active' | 'completed'
+  const [completingId, setCompletingId] = useState(null);
+  const [rowBusyId, setRowBusyId] = useState(null);
+
+  // View state — window starts at the beginning of the current week and spans
+  // ~8 weeks forward. Last week is never shown.
+  const todayStr = todayInBusinessTz();
+  const weekStart = startOfWeek(todayStr);
+  const [viewStart, setViewStart] = useState(weekStart);
+  const DAY_COUNT = 56;
 
   // Modals
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -125,11 +194,12 @@ export default function CrewCalendar() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [schedRes, hp1Res, hp2Res, prospRes] = await Promise.all([
+      const [schedRes, hp1Res, hp2Res, prospRes, completedRes] = await Promise.all([
         fetch('/dashboard/crew-schedule', { credentials: 'include' }),
         fetch('/dashboard/crew-schedule/next-available?crew=hp1', { credentials: 'include' }),
         fetch('/dashboard/crew-schedule/next-available?crew=hp2', { credentials: 'include' }),
         fetch('/dashboard/prospects', { credentials: 'include' }),
+        fetch('/dashboard/crew-schedule?status=completed', { credentials: 'include' }),
       ]);
       if (schedRes.ok) {
         const d = await schedRes.json();
@@ -140,6 +210,10 @@ export default function CrewCalendar() {
       if (prospRes.ok) {
         const d = await prospRes.json();
         setProspects(d.prospects || []);
+      }
+      if (completedRes.ok) {
+        const d = await completedRes.json();
+        setCompletedJobs(d.schedule || []);
       }
     } catch (err) {
       console.error('CrewCalendar fetch error:', err);
@@ -162,6 +236,13 @@ export default function CrewCalendar() {
     .filter((e) => e.crew === 'hp2')
     .sort((a, b) => a.start_date.localeCompare(b.start_date));
 
+  // Job list (below timeline): Active = scheduled + in_progress + paused, Completed = completed.
+  const activeListJobs = schedule
+    .filter((e) => e.status === 'scheduled' || e.status === 'in_progress' || e.status === 'paused')
+    .sort((a, b) => dateOnly(a.start_date).localeCompare(dateOnly(b.start_date)));
+  const completedListJobs = [...completedJobs]
+    .sort((a, b) => dateOnly(a.start_date).localeCompare(dateOnly(b.start_date)));
+
   // -------------------------------------------------------------------------
   // Month navigation
   // -------------------------------------------------------------------------
@@ -169,20 +250,16 @@ export default function CrewCalendar() {
   const viewMonth = getMonthLabel(viewStart);
 
   const prevMonth = () => {
-    const d = new Date(viewStart + 'T12:00:00');
-    d.setDate(d.getDate() - 30);
-    const minDate = new Date(todayStr + 'T12:00:00');
-    minDate.setDate(minDate.getDate() - 30);
-    if (d >= minDate) setViewStart(toDateStr(d));
+    // Shift back 4 weeks, but never before the current week (no last week shown).
+    const candidate = addDays(viewStart, -28);
+    setViewStart(maxDateStr(weekStart, candidate));
   };
 
   const nextMonth = () => {
-    const d = new Date(viewStart + 'T12:00:00');
-    d.setDate(d.getDate() + 30);
-    setViewStart(toDateStr(d));
+    setViewStart(addDays(viewStart, 28));
   };
 
-  const goToday = () => setViewStart(todayStr);
+  const goToday = () => setViewStart(weekStart);
 
   // -------------------------------------------------------------------------
   // Schedule Job modal helpers
@@ -191,17 +268,50 @@ export default function CrewCalendar() {
   const scheduledProspectIds = new Set(schedule.map((e) => e.prospect_id));
   const eligibleProspects = prospects.filter(
     (p) =>
-      ['quote_accepted', 'scheduled_for_work', 'work_in_progress'].includes(p.stage) &&
+      ['quote_accepted', 'pending_permits', 'scheduled_for_work', 'work_in_progress'].includes(p.stage) &&
       (!p.crew_assignment || !scheduledProspectIds.has(p.id))
   );
+
+  // Jobs in a production stage that should be on a crew but have no schedule
+  // entry yet — surfaced so they aren't lost. (Auto-creating the entry on a
+  // status change is Phase 3; here we just make them visible + schedulable.)
+  const awaitingScheduling = prospects
+    .filter(
+      (p) =>
+        ['pending_permits', 'scheduled_for_work', 'work_in_progress'].includes(p.stage) &&
+        !scheduledProspectIds.has(p.id)
+    )
+    .sort((a, b) => (a.sm8_client_name || '').localeCompare(b.sm8_client_name || ''));
 
   const openScheduleModal = () => {
     const nextDate =
       schedCrew === 'hp1'
         ? hp1Next?.next_available_date || todayStr
         : hp2Next?.next_available_date || todayStr;
-    setSchedStart(nextDate);
+    setSchedStart(maxDateStr(todayStr, nextDate));
     setSchedProspectId(eligibleProspects.length > 0 ? String(eligibleProspects[0].id) : '');
+    setSchedDays(3);
+    setSchedCrewSize(2);
+    setSchedCrewMembers('');
+    setShowScheduleModal(true);
+  };
+
+  // Open the Schedule-Job modal pre-selected to a specific prospect (used by the
+  // Awaiting-scheduling list). Default the firm Start Date to that prospect's
+  // possible_start_date (the soft target) when set — floored at today so a stale
+  // target never produces a past firm date — otherwise max(today, next-available).
+  const openScheduleModalFor = (prospectId) => {
+    const prospect = prospects.find((p) => p.id === prospectId);
+    const possible = prospect?.possible_start_date ? dateOnly(prospect.possible_start_date) : '';
+    const nextDate =
+      schedCrew === 'hp1'
+        ? hp1Next?.next_available_date || todayStr
+        : hp2Next?.next_available_date || todayStr;
+    const defaultStart = possible
+      ? maxDateStr(todayStr, possible)
+      : maxDateStr(todayStr, nextDate);
+    setSchedStart(defaultStart);
+    setSchedProspectId(String(prospectId));
     setSchedDays(3);
     setSchedCrewSize(2);
     setSchedCrewMembers('');
@@ -214,7 +324,7 @@ export default function CrewCalendar() {
       crew === 'hp1'
         ? hp1Next?.next_available_date || todayStr
         : hp2Next?.next_available_date || todayStr;
-    setSchedStart(nextDate);
+    setSchedStart(maxDateStr(todayStr, nextDate));
   };
 
   const handleScheduleSubmit = async () => {
@@ -241,6 +351,77 @@ export default function CrewCalendar() {
       console.error('Schedule error:', err);
     } finally {
       setScheduling(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // Mark job completed
+  // -------------------------------------------------------------------------
+
+  const handleComplete = async (id) => {
+    setCompletingId(id);
+    try {
+      const res = await fetch(`/dashboard/crew-schedule/${id}/complete`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Complete failed');
+      await fetchData();
+    } catch (err) {
+      console.error('Complete error:', err);
+    } finally {
+      setCompletingId(null);
+    }
+  };
+
+  // Change a job's progress status. 'completed' reuses the complete flow;
+  // 'paused' prompts for a one-line reason. Scheduled/In Progress are direct.
+  const handleStatusChange = async (job, newStatus) => {
+    if (newStatus === job.status) return;
+    if (newStatus === 'completed') {
+      await handleComplete(job.id);
+      return;
+    }
+    let reason;
+    if (newStatus === 'paused') {
+      reason = window.prompt('Reason for pausing (one line):');
+      if (reason === null) return;            // cancelled
+      if (!reason.trim()) return;             // empty — backend requires a reason
+    }
+    setRowBusyId(job.id);
+    try {
+      const res = await fetch(`/dashboard/crew-schedule/${job.id}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ status: newStatus, reason }),
+      });
+      if (!res.ok) throw new Error('Status change failed');
+      await fetchData();
+    } catch (err) {
+      console.error('Status change error:', err);
+    } finally {
+      setRowBusyId(null);
+    }
+  };
+
+  // Toggle a follow-up flag (needs_sealing / needs_landscape) on the prospect.
+  const handleFlagToggle = async (job, flag) => {
+    const newValue = !job[flag];
+    setRowBusyId(job.id);
+    try {
+      const res = await fetch(`/dashboard/prospects/${job.prospect_id}/flags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ flag, value: newValue }),
+      });
+      if (!res.ok) throw new Error('Flag toggle failed');
+      await fetchData();
+    } catch (err) {
+      console.error('Flag toggle error:', err);
+    } finally {
+      setRowBusyId(null);
     }
   };
 
@@ -436,6 +617,26 @@ export default function CrewCalendar() {
           </div>
         )}
 
+        {/* Job list */}
+        {!loading && (
+          <JobList
+            activeJobs={activeListJobs}
+            completedJobs={completedListJobs}
+            listView={listView}
+            setListView={setListView}
+            onComplete={handleComplete}
+            onStatusChange={handleStatusChange}
+            onFlagToggle={handleFlagToggle}
+            completingId={completingId}
+            rowBusyId={rowBusyId}
+          />
+        )}
+
+        {/* Awaiting scheduling */}
+        {!loading && (
+          <AwaitingScheduling items={awaitingScheduling} onSchedule={openScheduleModalFor} />
+        )}
+
         {/* Modals */}
         {showScheduleModal && (
           <ScheduleModal
@@ -513,7 +714,7 @@ export default function CrewCalendar() {
           <button onClick={prevMonth} className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded">←</button>
           <span className="text-xs font-medium text-gray-600 w-32 text-center">{viewMonth}</span>
           <button onClick={nextMonth} className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded">→</button>
-          {viewStart !== todayStr && (
+          {viewStart !== weekStart && (
             <button onClick={goToday} className="px-2 py-1 text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded">Today</button>
           )}
         </div>
@@ -616,11 +817,12 @@ export default function CrewCalendar() {
                       })}
                     </div>
 
-                    {/* Job blocks */}
+                    {/* Job blocks — colored by CREW */}
                     {jobs.map((job) => {
-                      const startStr = typeof job.start_date === 'string'
-                        ? job.start_date.split('T')[0]
-                        : toDateStr(new Date(job.start_date));
+                      const startStr = dateOnly(job.start_date);
+                      // No valid date → don't draw a band (it appears in the list as "Not scheduled").
+                      if (!startStr) return null;
+
                       const offset = daysBetween(viewStart, startStr);
                       const width = job.estimated_days || 1;
 
@@ -629,7 +831,6 @@ export default function CrewCalendar() {
 
                       const left = Math.max(0, offset) * COL_W;
                       const visibleWidth = (Math.min(offset + width, DAY_COUNT) - Math.max(offset, 0)) * COL_W - 2;
-                      const bgColor = STATUS_COLORS[job.status] || STATUS_COLORS.scheduled;
                       const endStr = addDays(startStr, job.estimated_days);
 
                       return (
@@ -641,7 +842,7 @@ export default function CrewCalendar() {
                             width: visibleWidth,
                             top: 6,
                             height: 44,
-                            backgroundColor: bgColor,
+                            ...bandStyleForStatus(meta.color, job.status),
                             borderRadius: 4,
                             padding: '3px 6px',
                             cursor: 'pointer',
@@ -653,10 +854,10 @@ export default function CrewCalendar() {
                           onMouseLeave={handleJobLeave}
                         >
                           <div className="text-white text-[10px] font-semibold leading-tight truncate">
-                            {job.sm8_client_name}
+                            {job.sm8_client_name}{job.sm8_job_number ? ` · #${job.sm8_job_number}` : ''}
                           </div>
                           <div className="text-white/80 text-[9px] truncate">
-                            {job.sm8_job_number ? `#${job.sm8_job_number} ` : ''}· {job.estimated_days}d{job.crew_size ? ` · ${job.crew_size} ppl` : ''}
+                            {job.estimated_days}d{job.crew_size ? ` · ${job.crew_size} ppl` : ''}
                           </div>
 
                           {/* Delay buttons on hover */}
@@ -708,6 +909,26 @@ export default function CrewCalendar() {
         </div>
       )}
 
+      {/* Job list below the timeline */}
+      {!loading && (
+        <JobList
+          activeJobs={activeListJobs}
+          completedJobs={completedListJobs}
+          listView={listView}
+          setListView={setListView}
+          onComplete={handleComplete}
+          onStatusChange={handleStatusChange}
+          onFlagToggle={handleFlagToggle}
+          completingId={completingId}
+          rowBusyId={rowBusyId}
+        />
+      )}
+
+      {/* Awaiting scheduling */}
+      {!loading && (
+        <AwaitingScheduling items={awaitingScheduling} onSchedule={openScheduleModalFor} />
+      )}
+
       {/* Schedule modal */}
       {showScheduleModal && (
         <ScheduleModal
@@ -720,6 +941,10 @@ export default function CrewCalendar() {
           setSchedStart={setSchedStart}
           schedDays={schedDays}
           setSchedDays={setSchedDays}
+          schedCrewSize={schedCrewSize}
+          setSchedCrewSize={setSchedCrewSize}
+          schedCrewMembers={schedCrewMembers}
+          setSchedCrewMembers={setSchedCrewMembers}
           scheduling={scheduling}
           onSubmit={handleScheduleSubmit}
           onClose={() => setShowScheduleModal(false)}
@@ -775,11 +1000,9 @@ export default function CrewCalendar() {
 // ---------------------------------------------------------------------------
 
 function MobileJobCard({ job, onDelay, onEdit }) {
-  const startStr = typeof job.start_date === 'string'
-    ? job.start_date.split('T')[0]
-    : toDateStr(new Date(job.start_date));
-  const endStr = addDays(startStr, job.estimated_days);
-  const bgColor = STATUS_COLORS[job.status] || STATUS_COLORS.scheduled;
+  const startStr = dateOnly(job.start_date);
+  const endStr = startStr ? addDays(startStr, job.estimated_days) : '';
+  const bgColor = CREW_META[job.crew]?.color || '#6B7280';
 
   return (
     <div className="flex items-center justify-between bg-white border border-gray-100 rounded-lg p-2 mb-1.5 cursor-pointer" onClick={() => onEdit(job)}>
@@ -920,7 +1143,8 @@ function ScheduleModal({
         {selectedProspect && schedStart && (
           <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2 mb-4">
             {crewLabel}: {selectedProspect.sm8_client_name} — {formatDateShort(schedStart)} to{' '}
-            {formatDateShort(endDate)} ({schedDays} day{schedDays > 1 ? 's' : ''} · {schedCrewSize} employee{schedCrewSize !== 1 ? 's' : ''})
+            {formatDateShort(endDate)} ({schedDays} day{schedDays > 1 ? 's' : ''}
+            {schedCrewSize ? ` · ${schedCrewSize} employee${schedCrewSize !== 1 ? 's' : ''}` : ''})
           </div>
         )}
 
@@ -1104,7 +1328,8 @@ function EditJobModal({
         {editStart && (
           <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2 mb-4">
             {editCrew === 'hp1' ? 'HP#1' : 'HP#2'}: {formatDateShort(editStart)} to{' '}
-            {formatDateShort(endDate)} ({editDays} day{editDays > 1 ? 's' : ''} · {editCrewSize} employee{editCrewSize !== 1 ? 's' : ''})
+            {formatDateShort(endDate)} ({editDays} day{editDays > 1 ? 's' : ''}
+            {editCrewSize ? ` · ${editCrewSize} employee${editCrewSize !== 1 ? 's' : ''}` : ''})
           </div>
         )}
 
@@ -1155,6 +1380,226 @@ function EditJobModal({
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JobList — active / completed scheduled jobs below the timeline
+// ---------------------------------------------------------------------------
+
+const LIST_STATUS_BADGE = {
+  scheduled:   { bg: '#DBEAFE', text: '#1E40AF', label: 'Scheduled' },
+  in_progress: { bg: '#D1FAE5', text: '#065F46', label: 'In Progress' },
+  paused:      { bg: '#FEF3C7', text: '#92400E', label: 'Paused' },
+  delayed:     { bg: '#FEF3C7', text: '#92400E', label: 'Delayed' },
+  completed:   { bg: '#EAF3DE', text: '#27500A', label: 'Completed' },
+};
+
+// Settable statuses from the row control (Completed is handled separately).
+const STATUS_OPTIONS = [
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'in_progress', label: 'In Progress' },
+  { value: 'paused', label: 'Paused' },
+  { value: 'completed', label: 'Completed' },
+];
+
+const FLAG_CHIPS = [
+  { key: 'needs_sealing', label: 'Needs Sealing', color: '#0F766E' },
+  { key: 'needs_landscape', label: 'Needs Landscape', color: '#15803D' },
+];
+
+// Tab definitions — adding a third tab (e.g. "Crew Activities") only needs a new
+// entry here plus a content branch below; the toggle itself never changes.
+const LIST_TABS = [
+  { key: 'active', label: 'Active' },
+  { key: 'completed', label: 'Completed' },
+];
+
+function JobList({
+  activeJobs, completedJobs, listView, setListView,
+  onComplete, onStatusChange, onFlagToggle, completingId, rowBusyId,
+}) {
+  const jobs = listView === 'completed' ? completedJobs : activeJobs;
+
+  return (
+    <div className="mt-6">
+      {/* Tabs */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-sm font-semibold text-gray-700">Scheduled Jobs</div>
+        <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+          {LIST_TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setListView(t.key)}
+              className={`px-3 py-1 text-xs font-medium ${
+                listView === t.key ? 'bg-teal-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {jobs.length === 0 ? (
+        <div className="text-xs text-gray-400 py-4 text-center border border-gray-100 rounded-lg">
+          {listView === 'completed' ? 'No completed jobs yet.' : 'No active jobs scheduled.'}
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+          {jobs.map((job) => (
+            <JobListRow
+              key={job.id}
+              job={job}
+              listView={listView}
+              onComplete={onComplete}
+              onStatusChange={onStatusChange}
+              onFlagToggle={onFlagToggle}
+              completing={completingId === job.id}
+              busy={rowBusyId === job.id || completingId === job.id}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobListRow({ job, listView, onComplete, onStatusChange, onFlagToggle, completing, busy }) {
+  const crewMeta = CREW_META[job.crew] || { label: job.crew, color: '#6B7280' };
+  const startStr = dateOnly(job.start_date);
+  const endStr = startStr ? addDays(startStr, job.estimated_days) : '';
+  const isActive = listView === 'active';
+  const showMeta = hasRowMeta(job);
+  const nt = useNoteThread({ prospectId: job.prospect_id, latestComment: job.latest_comment, commentCount: job.comment_count });
+
+  return (
+    <div className="px-3 py-2">
+      {/* Line 1 — dot + identity (left) · status select / flags / Mark completed (right) */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: crewMeta.color }} />
+        <span className="text-[15px] font-medium text-gray-900 truncate max-w-[240px]" title={job.sm8_client_name}>
+          {job.sm8_client_name}
+        </span>
+        {job.sm8_job_number && (
+          <span className="shrink-0 text-[11px] text-gray-400 font-mono">#{job.sm8_job_number}</span>
+        )}
+        <span className="shrink-0 text-[10px] text-gray-400">{crewMeta.label}</span>
+
+        <div className="ml-auto flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {isActive && (
+            <select
+              value={job.status === 'completed' ? '' : job.status}
+              disabled={busy}
+              onChange={(e) => onStatusChange(job, e.target.value)}
+              className="text-[10px] border border-gray-200 rounded px-1.5 py-1 text-gray-700 outline-none focus:border-teal-500 disabled:opacity-50"
+            >
+              {STATUS_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          )}
+
+          {FLAG_CHIPS.map((f) => {
+            const on = !!job[f.key];
+            return (
+              <button
+                key={f.key}
+                onClick={() => onFlagToggle(job, f.key)}
+                disabled={busy}
+                className="text-[10px] font-medium px-2 py-1 rounded-full border disabled:opacity-50"
+                style={on
+                  ? { backgroundColor: f.color, color: '#fff', borderColor: f.color }
+                  : { backgroundColor: '#fff', color: '#6B7280', borderColor: '#E5E7EB' }}
+              >
+                {on ? '✓ ' : ''}{f.label}
+              </button>
+            );
+          })}
+
+          {isActive && (
+            <button
+              onClick={() => onComplete(job.id)}
+              disabled={busy}
+              className="text-[10px] font-medium border border-green-300 text-green-700 px-2 py-1 rounded hover:bg-green-50 disabled:opacity-50"
+            >
+              {completing ? 'Saving...' : 'Mark Completed'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Line 2 — address first · Design # | work dates */}
+      <div className="flex items-center gap-x-1 gap-y-0.5 flex-wrap text-[10px] text-gray-400 mt-[5px] min-w-0">
+        <RowMeta p={job} />
+        {showMeta && <span className="text-gray-300">|</span>}
+        <span className="shrink-0">
+          {startStr
+            ? `${formatDateShort(startStr)} → ${formatDateShort(endStr)} · ${job.estimated_days} day${job.estimated_days !== 1 ? 's' : ''}`
+            : 'Not scheduled'}
+        </span>
+      </div>
+
+      {/* Line 3 — latest note · View all · + Note */}
+      <div className="flex items-center gap-2 flex-wrap text-[10px] text-gray-400 mt-[5px] min-w-0">
+        <NotePreview nt={nt} />
+        <NoteAddTrigger nt={nt} />
+      </div>
+
+      <NoteExpansion nt={nt} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// AwaitingScheduling — production-stage prospects with no crew_schedule entry.
+// Each opens the existing Schedule-Job modal pre-selected to that prospect.
+// ---------------------------------------------------------------------------
+
+const AWAITING_STAGE_LABEL = {
+  pending_permits: 'Pending permits',
+  scheduled_for_work: 'Scheduled for work',
+  work_in_progress: 'Work in progress',
+};
+
+function AwaitingScheduling({ items, onSchedule }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-2 mb-1">
+        <div className="text-sm font-semibold text-gray-700">Awaiting scheduling</div>
+        <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{items.length}</span>
+      </div>
+      <div className="text-[11px] text-gray-400 mb-2">
+        Jobs in a production stage with no crew booking yet — schedule them so they appear on the timeline.
+      </div>
+      <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+        {items.map((p) => (
+          <div key={p.id} className="flex items-center gap-3 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-semibold text-gray-900 truncate max-w-[220px]" title={p.sm8_client_name}>
+                  {p.sm8_client_name}
+                </span>
+                {p.sm8_job_number && (
+                  <span className="shrink-0 text-[11px] text-gray-400 font-mono">#{p.sm8_job_number}</span>
+                )}
+                <span className="shrink-0 text-[10px] text-gray-400">{AWAITING_STAGE_LABEL[p.stage] || p.stage}</span>
+              </div>
+              {p.job_address && (
+                <div className="text-[10px] text-gray-400 truncate mt-0.5" title={p.job_address}>📍 {p.job_address}</div>
+              )}
+            </div>
+            <button
+              onClick={() => onSchedule(p.id)}
+              className="shrink-0 text-[10px] font-medium bg-teal-600 text-white px-2.5 py-1 rounded hover:bg-teal-700"
+            >
+              Schedule
+            </button>
+          </div>
+        ))}
       </div>
     </div>
   );

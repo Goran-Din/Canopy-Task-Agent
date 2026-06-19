@@ -64,6 +64,9 @@ export async function upsertDetectedProspect(
     sm8_status: string;
     scope_summary: string;
     quoted_total: number;
+    project_total: number;
+    sm8_completion_date: string | null;
+    sm8_created_date: string | null;
     job_address: string;
     matched_by: string[];
   },
@@ -81,9 +84,12 @@ export async function upsertDetectedProspect(
            scope_summary = CASE WHEN scope_is_manual THEN scope_summary ELSE $2 END,
            quoted_total  = CASE WHEN quoted_total_is_manual THEN quoted_total ELSE $3 END,
            sm8_status = $4, job_address = $5, matched_by = $6,
+           project_total = $7,
+           sm8_completion_date = $8::timestamp AT TIME ZONE 'America/Chicago',
+           sm8_created_date = $9::timestamp AT TIME ZONE 'America/Chicago',
            sm8_last_synced = NOW(), updated_at = NOW()
-       WHERE sm8_job_uuid = $7`,
-      [job.sm8_client_name, job.scope_summary, job.quoted_total, job.sm8_status, job.job_address, job.matched_by, job.sm8_job_uuid]
+       WHERE sm8_job_uuid = $10`,
+      [job.sm8_client_name, job.scope_summary, job.quoted_total, job.sm8_status, job.job_address, job.matched_by, job.project_total, job.sm8_completion_date, job.sm8_created_date, job.sm8_job_uuid]
     );
     return 'updated';
   }
@@ -91,8 +97,11 @@ export async function upsertDetectedProspect(
   const inserted = await pool.query(
     `INSERT INTO hardscape_prospects
        (sm8_client_uuid, sm8_client_name, sm8_job_uuid, sm8_job_number, stage,
-        scope_summary, quoted_total, sm8_status, job_address, matched_by, sm8_last_synced)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        scope_summary, quoted_total, sm8_status, job_address, matched_by, project_total,
+        sm8_completion_date, sm8_created_date, sm8_last_synced)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+        $12::timestamp AT TIME ZONE 'America/Chicago',
+        $13::timestamp AT TIME ZONE 'America/Chicago', NOW())
      ON CONFLICT (sm8_job_uuid) WHERE sm8_job_uuid IS NOT NULL DO NOTHING
      RETURNING id`,
     [
@@ -106,6 +115,9 @@ export async function upsertDetectedProspect(
       job.sm8_status,
       job.job_address,
       job.matched_by,
+      job.project_total,
+      job.sm8_completion_date,
+      job.sm8_created_date,
     ]
   );
 

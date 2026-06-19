@@ -16,6 +16,11 @@ export const STAGE_STYLES = {
 // Pipeline order — also used to sort by Status.
 export const STAGE_KEYS = Object.keys(STAGE_STYLES);
 
+// Stages offered for selection in the status dropdown. request_site_visit is
+// intentionally excluded (no tab routes it, so a job set to it would vanish) —
+// the value stays defined above so existing data/logic remains safe.
+export const SELECTABLE_STAGE_KEYS = STAGE_KEYS.filter((k) => k !== 'request_site_visit');
+
 export const QUOTE_STAGES = STAGE_KEYS.filter((k) => STAGE_STYLES[k].phase === 'quote');
 export const PRODUCTION_STAGES = STAGE_KEYS.filter((k) => STAGE_STYLES[k].phase === 'production');
 

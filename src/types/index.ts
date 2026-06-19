@@ -139,6 +139,8 @@ export interface HardscapeProspect {
   actual_start_date?: string;
   scope_is_manual?: boolean;
   quoted_total_is_manual?: boolean;
+  needs_sealing?: boolean;
+  needs_landscape?: boolean;
   sm8_last_synced?: string;
   stage_updated_at: string;
   created_at: string;

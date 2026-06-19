@@ -2,9 +2,49 @@ import axios from 'axios';
 import cron from 'node-cron';
 import { config } from '../config';
 import { getAccessToken } from '../tools/xero';
-import { getConfigValue } from '../db/queries';
+import { getConfigValue, setConfigValue } from '../db/queries';
 import { pool } from '../db/pool';
 import logger from '../logger';
+
+// ---------------------------------------------------------------------------
+// On-demand sync state (the "Sync from Xero" button) — see runInvoiceSyncNow.
+// ---------------------------------------------------------------------------
+
+// Structured result so callers (the dashboard endpoint) can show a friendly
+// message instead of a raw error, especially for the Xero daily-limit case.
+export interface InvoiceSyncResult {
+  status: 'ok' | 'day_limited' | 'already_running' | 'cooldown' | 'error';
+  invoicesFetched?: number;        // total Xero invoices paged in
+  prospectInvoicesUpserted?: number; // rows written to prospect_invoices
+  hardscapeMatchedByJobNumber?: number;
+  hardscapeMatchedByClientName?: number;
+  hardscapeUnmatched?: number;
+  retryAfterSeconds?: number;      // day_limited / cooldown: when to try again
+  ranAt?: string;                  // ISO timestamp of completion
+  message?: string;
+}
+
+// Thrown by fetchXeroPage when Xero reports the *daily* quota is exhausted, so
+// syncInvoices can surface a structured day_limited result rather than erroring.
+class XeroDayLimitError extends Error {
+  retryAfterSeconds: number | null;
+  constructor(retryAfterSeconds: number | null) {
+    super(`Xero daily rate limit exhausted (retry-after ${retryAfterSeconds ?? '?'}s)`);
+    this.name = 'XeroDayLimitError';
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+// Single-instance lock (cron + manual share it) and last-run stamp for the
+// manual cooldown. Manual clicks within MANUAL_COOLDOWN_MS of the last run are
+// rejected so rapid clicks can't pile up Xero calls.
+let invoiceSyncRunning = false;
+let lastInvoiceSyncAt = 0; // epoch ms when the last run STARTED (any source)
+const MANUAL_COOLDOWN_MS = 60_000;
+
+export function isInvoiceSyncRunning(): boolean {
+  return invoiceSyncRunning;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,9 +108,75 @@ interface SM8Company {
 // Data fetchers
 // ---------------------------------------------------------------------------
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// GET one Xero page, retrying on a transient 429 (minute-limit) by honouring
+// Retry-After, capped so a run never blocks for long. A *daily*-limit 429
+// (x-rate-limit-problem: day) resets only after hours, so there's no point
+// retrying within a run — surface it immediately so the caller keeps the
+// existing cache and the next scheduled run picks up once the quota resets.
+async function fetchXeroPage(
+  page: number,
+  token: string,
+  tenantId: string
+): Promise<XeroInvoice[]> {
+  const MAX_RETRIES = 4;
+  const MAX_WAIT_MS = 65000; // never block a run longer than ~1 min per page
+
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await axios.get(`${XERO_API_URL}/Invoices`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Xero-Tenant-Id': tenantId,
+          Accept: 'application/json',
+        },
+        params: { Statuses: 'AUTHORISED,PAID', page },
+        timeout: 30000,
+      });
+      return res.data?.Invoices || [];
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      const headers = (axios.isAxiosError(err) ? err.response?.headers : undefined) || {};
+      const problem = headers['x-rate-limit-problem'];
+      const retryAfter = parseInt(String(headers['retry-after'] || ''), 10);
+
+      // Daily quota exhausted — won't recover within this run. Bail out.
+      if (status === 429 && problem === 'day') {
+        logger.error({
+          event: 'invoice_sync_xero_day_limit',
+          retry_after_s: Number.isFinite(retryAfter) ? retryAfter : null,
+          day_remaining: headers['x-daylimit-remaining'],
+        });
+        throw new XeroDayLimitError(Number.isFinite(retryAfter) ? retryAfter : null);
+      }
+
+      // Transient 429 (minute/app limit) — back off and retry, capped.
+      if (status === 429 && attempt <= MAX_RETRIES) {
+        const waitMs = Math.min(
+          Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * attempt,
+          MAX_WAIT_MS
+        );
+        logger.warn({
+          event: 'invoice_sync_xero_429_retry',
+          page, attempt, problem: problem || null, wait_ms: waitMs,
+        });
+        await sleep(waitMs);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+}
+
 // Fetch ALL AUTHORISED + PAID invoices, paging until a short page is returned.
 // (Xero caps each page at 100; DRAFT/SUBMITTED are intentionally not fetched —
-// they map to "not invoiced".)
+// they map to "not invoiced".) Each page is 429-aware (see fetchXeroPage), and
+// pages are lightly paced so a full ~12-page run stays well under Xero's
+// 60-calls/minute limit.
 async function fetchXeroInvoices(): Promise<XeroInvoice[]> {
   const token = await getAccessToken();
   const tenantId = await getConfigValue('xero_tenant_id');
@@ -81,19 +187,11 @@ async function fetchXeroInvoices(): Promise<XeroInvoice[]> {
   const MAX_PAGES = 100; // safety stop (~10k invoices)
 
   while (page <= MAX_PAGES) {
-    const res = await axios.get(`${XERO_API_URL}/Invoices`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Xero-Tenant-Id': tenantId,
-        Accept: 'application/json',
-      },
-      params: { Statuses: 'AUTHORISED,PAID', page },
-      timeout: 30000,
-    });
-    const batch: XeroInvoice[] = res.data?.Invoices || [];
+    const batch = await fetchXeroPage(page, token, tenantId);
     all.push(...batch);
     if (batch.length < 100) break; // last page
     page++;
+    await sleep(250); // pace pages: ~4/s keeps us under the 60/min minute limit
   }
 
   logger.info({ event: 'invoice_sync_xero_pages', pages: page, fetched: all.length });
@@ -177,6 +275,58 @@ function computeMatch(invs: XeroInvoice[]): InvoiceMatch {
   };
 }
 
+// Upsert ALL Xero invoices matched to a hardscape prospect into prospect_invoices
+// (the new multi-invoice billing source for the 4b Completed view), idempotent by
+// xero_invoice_id. Stores the RAW Xero status (paid / authorised); the display
+// status is computed on read in the feed. source='manual' rows are never touched,
+// and stale source='xero' rows (no longer matched) are pruned for this prospect.
+async function syncProspectInvoices(prospectId: number, invs: XeroInvoice[]): Promise<number> {
+  const keepIds: string[] = [];
+
+  for (const inv of invs) {
+    if (!inv.InvoiceID) continue;
+    keepIds.push(inv.InvoiceID);
+    const rawStatus = (inv.Status || '').toLowerCase();
+    const paidDate = rawStatus === 'paid' ? parseXeroDate(inv.FullyPaidOnDate) : null;
+
+    await pool.query(
+      `INSERT INTO prospect_invoices
+         (prospect_id, invoice_number, amount, note, source, xero_invoice_id, status, due_date, paid_date)
+       VALUES ($1, $2, $3, $4, 'xero', $5, $6, $7, $8)
+       ON CONFLICT (xero_invoice_id) WHERE xero_invoice_id IS NOT NULL DO UPDATE SET
+         prospect_id    = EXCLUDED.prospect_id,
+         invoice_number = EXCLUDED.invoice_number,
+         amount         = EXCLUDED.amount,
+         note           = EXCLUDED.note,
+         source         = 'xero',
+         status         = EXCLUDED.status,
+         due_date       = EXCLUDED.due_date,
+         paid_date      = EXCLUDED.paid_date`,
+      [
+        prospectId,
+        inv.InvoiceNumber || null,
+        inv.Total ?? null,
+        inv.Reference || null,
+        inv.InvoiceID,
+        rawStatus || null,
+        parseXeroDate(inv.DueDate),
+        paidDate,
+      ]
+    );
+  }
+
+  // Prune Xero rows that no longer match this prospect (e.g. Reference changed).
+  // <> ALL('{}') is vacuously true, so an empty keep-set clears all xero rows.
+  // Manual rows (source='manual') are intentionally left alone.
+  await pool.query(
+    `DELETE FROM prospect_invoices
+     WHERE prospect_id = $1 AND source = 'xero' AND xero_invoice_id <> ALL($2::text[])`,
+    [prospectId, keepIds]
+  );
+
+  return keepIds.length;
+}
+
 async function fetchSM8Jobs(): Promise<SM8Job[]> {
   const res = await axios.get(`${SM8_BASE}/job.json`, {
     headers: SM8_HEADERS,
@@ -202,7 +352,16 @@ async function fetchSM8Company(companyUuid: string): Promise<SM8Company | null> 
 // Core sync
 // ---------------------------------------------------------------------------
 
-async function syncInvoices(): Promise<void> {
+async function syncInvoices(): Promise<InvoiceSyncResult> {
+  if (invoiceSyncRunning) {
+    logger.info({ event: 'invoice_sync_skipped_locked' });
+    return { status: 'already_running' };
+  }
+  invoiceSyncRunning = true;
+  lastInvoiceSyncAt = Date.now();
+
+  let prospectInvoicesUpserted = 0;
+
   try {
     logger.info({ event: 'invoice_sync_start' });
 
@@ -211,11 +370,23 @@ async function syncInvoices(): Promise<void> {
     try {
       xeroInvoices = await fetchXeroInvoices();
     } catch (err) {
+      // Daily quota exhausted — surface a structured day_limited result so the
+      // dashboard shows a friendly "try again later" instead of a failure.
+      if (err instanceof XeroDayLimitError) {
+        const result: InvoiceSyncResult = {
+          status: 'day_limited',
+          retryAfterSeconds: err.retryAfterSeconds ?? undefined,
+          ranAt: new Date().toISOString(),
+          message: 'Xero daily limit reached',
+        };
+        await persistLastSync(result);
+        return result;
+      }
       logger.error({
         event: 'invoice_sync_xero_error',
         error: err instanceof Error ? err.message : String(err),
       });
-      return; // Keep existing cache
+      return { status: 'error', message: 'Xero fetch failed', ranAt: new Date().toISOString() };
     }
 
     // 2. Build lookup maps from the FULL invoice set:
@@ -266,7 +437,7 @@ async function syncInvoices(): Promise<void> {
     let hsTotal = 0;
     try {
       const hardscapeResult = await pool.query(`
-        SELECT sm8_job_uuid, sm8_job_number, sm8_client_name
+        SELECT id, sm8_job_uuid, sm8_job_number, sm8_client_name
         FROM hardscape_prospects
         WHERE sm8_job_uuid IS NOT NULL
       `);
@@ -329,6 +500,11 @@ async function syncInvoices(): Promise<void> {
               m.paidDate,
             ]
           );
+
+          // NEW (Phase 4a): persist ALL matched invoices for this prospect into
+          // prospect_invoices (multiple per job), idempotent by xero_invoice_id.
+          // invoice_cache above stays as the single-match badge source.
+          prospectInvoicesUpserted += await syncProspectInvoices(row.id, matched);
         } catch (err) {
           logger.warn({
             event: 'invoice_sync_hardscape_job_error',
@@ -357,11 +533,25 @@ async function syncInvoices(): Promise<void> {
     try {
       allJobs = await fetchSM8Jobs();
     } catch (err) {
+      // Hardscape (Xero) matching above already completed — only the landscape
+      // pass needs SM8. Report success for the work that landed rather than
+      // discarding it; the next run retries the landscape pass.
       logger.error({
         event: 'invoice_sync_sm8_error',
         error: err instanceof Error ? err.message : String(err),
       });
-      return; // Keep existing cache
+      const result: InvoiceSyncResult = {
+        status: 'ok',
+        invoicesFetched: xeroInvoices.length,
+        prospectInvoicesUpserted,
+        hardscapeMatchedByJobNumber: hsJobMatched,
+        hardscapeMatchedByClientName: hsNameMatched,
+        hardscapeUnmatched: hsTotal - hsJobMatched - hsNameMatched,
+        ranAt: new Date().toISOString(),
+        message: 'Hardscape invoices synced (landscape pass skipped — ServiceM8 unavailable)',
+      };
+      await persistLastSync(result);
+      return result;
     }
 
     const relevantJobs = allJobs.filter(
@@ -496,12 +686,42 @@ async function syncInvoices(): Promise<void> {
       hardscape_matched_by_job_number: hsJobMatched,
       hardscape_matched_by_client_name: hsNameMatched,
       unmatched: unmatchedNames.length,
+      prospect_invoices_upserted: prospectInvoicesUpserted,
     });
+
+    const result: InvoiceSyncResult = {
+      status: 'ok',
+      invoicesFetched: xeroInvoices.length,
+      prospectInvoicesUpserted,
+      hardscapeMatchedByJobNumber: hsJobMatched,
+      hardscapeMatchedByClientName: hsNameMatched,
+      hardscapeUnmatched: hsTotal - hsJobMatched - hsNameMatched,
+      ranAt: new Date().toISOString(),
+    };
+    await persistLastSync(result);
+    return result;
   } catch (err) {
     logger.error({
       event: 'invoice_sync_error',
       error: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
+    });
+    return { status: 'error', message: 'Invoice sync failed', ranAt: new Date().toISOString() };
+  } finally {
+    invoiceSyncRunning = false;
+  }
+}
+
+// Record the last invoice-sync result for the dashboard's "Last synced" label.
+// Non-fatal if the write fails. day_limited runs are recorded too (so the UI can
+// show when we last tried), but a successful 'ok' overwrites it next time.
+async function persistLastSync(result: InvoiceSyncResult): Promise<void> {
+  try {
+    await setConfigValue('xero_invoice_last_sync', JSON.stringify(result));
+  } catch (err) {
+    logger.error({
+      event: 'invoice_sync_last_sync_write_error',
+      error: err instanceof Error ? err.message : String(err),
     });
   }
 }
@@ -510,8 +730,25 @@ async function syncInvoices(): Promise<void> {
 // Exports
 // ---------------------------------------------------------------------------
 
-export async function runInvoiceSyncNow(): Promise<void> {
-  await syncInvoices();
+/**
+ * Run the Xero invoice sync once. The hourly cron calls this with no options;
+ * the dashboard "Sync from Xero" button calls it with { manual: true }, which
+ * adds a ~60s cooldown so rapid clicks can't stack Xero calls. Always returns a
+ * structured result — including { status: 'day_limited' } when Xero's daily
+ * quota is exhausted — rather than throwing.
+ */
+export async function runInvoiceSyncNow(opts?: { manual?: boolean }): Promise<InvoiceSyncResult> {
+  if (opts?.manual && lastInvoiceSyncAt) {
+    const sinceMs = Date.now() - lastInvoiceSyncAt;
+    if (sinceMs < MANUAL_COOLDOWN_MS && !invoiceSyncRunning) {
+      return {
+        status: 'cooldown',
+        retryAfterSeconds: Math.ceil((MANUAL_COOLDOWN_MS - sinceMs) / 1000),
+        message: 'Just synced — try again shortly',
+      };
+    }
+  }
+  return await syncInvoices();
 }
 
 export function startInvoiceSync(): void {
@@ -520,10 +757,13 @@ export function startInvoiceSync(): void {
   // Run immediately on startup
   syncInvoices();
 
-  // Every 15 minutes
-  cron.schedule('*/15 * * * *', () => {
+  // Hourly. Each run now pages through ALL ~1,180 invoices (≈12 Xero calls),
+  // so the previous every-15-min cadence was ~1,150 Xero calls/day for this
+  // worker alone and was exhausting the 5,000/day tenant quota. Hourly keeps
+  // billing data fresh while cutting that to ~290/day.
+  cron.schedule('0 * * * *', () => {
     syncInvoices();
   }, { timezone: 'America/Chicago' });
 
-  logger.info({ event: 'invoice_sync_scheduled', interval: '15min' });
+  logger.info({ event: 'invoice_sync_scheduled', interval: '1h' });
 }

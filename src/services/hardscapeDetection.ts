@@ -3,14 +3,14 @@
  * (scripts/seed-hardscape-prospects.ts), the Excel report
  * (scripts/hardscape-report.ts), and the hourly SM8 sync worker.
  *
- * A job is a hardscape job if ANY of these three signals fire (OR, not AND):
+ * A job is a hardscape job if ANY of these signals fire (OR, not AND). This is
+ * a 5-condition OR spread across three signal types:
  *   A) "creator"  — created_by_staff_uuid is one of the configured creator
  *                   UUIDs (default: Marcin Lemanski).
  *   B) "category" — category_uuid is one of the configured category UUIDs
- *                   (default: the "Hardscape Projects" category).
+ *                   (defaults: "Hardscape Projects" OR "Subcontracted Projects").
  *   C) "itemcode" — the job carries ≥1 jobmaterial line item whose material
- *                   resolves to a catalog item_number starting "4230"
- *                   (the original detection; matching unchanged).
+ *                   resolves to a catalog item_number starting "4230" OR "4240".
  *
  * Signals A and B read /job.json fields that persist through the entire
  * Quote → Work Order → Completed lifecycle. Signal C only works while line
@@ -30,14 +30,22 @@ import { config } from '../config';
 import { getConfigValue } from '../db/queries';
 import { ProspectStage } from '../types';
 
-const HARDSCAPE_PREFIX = '4230';
-const BILLING_ONLY_PREFIXES = ['4230-DEPOSIT', '4230-DEPOSIT-CREDIT', '4230-TOTAL AMOUNT', '4230-TOTAL'];
+// Line-item code prefixes that flag a hardscape job (Signal C). 4240 was added
+// alongside the original 4230 to cover Subcontracted projects.
+const HARDSCAPE_PREFIXES = ['4230', '4240'];
+const BILLING_ONLY_PREFIXES = [
+  '4230-DEPOSIT', '4230-DEPOSIT-CREDIT', '4230-TOTAL AMOUNT', '4230-TOTAL',
+  '4240-DEPOSIT', '4240-DEPOSIT-CREDIT', '4240-TOTAL AMOUNT', '4240-TOTAL',
+];
 const SCAN_STATUSES = ['Quote', 'Work Order', 'In Progress', 'Invoice', 'Completed', 'Unsuccessful'];
 
 // Signal A/B defaults (confirmed from ServiceM8 discovery). Overridable via the
 // config_store keys below — arrays so more values can be added without a deploy.
 const DEFAULT_HARDSCAPE_CREATOR_UUIDS = ['0b8200fb-d98a-44e5-8c30-23c6fef14acb']; // Marcin Lemanski
-const DEFAULT_HARDSCAPE_CATEGORY_UUIDS = ['0e351232-cb5e-4890-afcd-23c729412b2b']; // "Hardscape Projects"
+const DEFAULT_HARDSCAPE_CATEGORY_UUIDS = [
+  '0e351232-cb5e-4890-afcd-23c729412b2b', // "Hardscape Projects"
+  'c1c43ae1-d00d-4e62-9024-23c727fbf0bb', // "Subcontracted Projects"
+];
 const CONFIG_KEY_CREATOR_UUIDS = 'hardscape_creator_uuids';
 const CONFIG_KEY_CATEGORY_UUIDS = 'hardscape_category_uuids';
 
@@ -65,6 +73,18 @@ export interface DetectedHardscapeJob {
   sm8_status: string;
   scope_summary: string;
   quoted_total: number;
+  // Persisted ServiceM8 job total (job.total_invoice_amount). Unlike quoted_total
+  // (derived from 4230 line items, which SM8 drops on the Quote → Work Order
+  // conversion) this survives the whole lifecycle, so it's the reliable project
+  // total. 0 when SM8 has no total on the job yet.
+  project_total: number;
+  // ServiceM8 job.completion_date as a NAIVE Central datetime string
+  // ("YYYY-MM-DD HH:MM:SS"), or null when SM8 hasn't completed the job
+  // (SM8 sends "0000-00-00 00:00:00"). Stored interpreted as America/Chicago.
+  sm8_completion_date: string | null;
+  // ServiceM8 job.quote_date — when the quote was first created — as a NAIVE
+  // Central datetime string, or null when absent/zero. The real List "Date".
+  sm8_created_date: string | null;
   job_address: string;
   // Which of the three signals flagged this job (any of creator/category/itemcode).
   matched_by: MatchSignal[];
@@ -196,7 +216,7 @@ export async function detectHardscapeJobs(): Promise<DetectedHardscapeJob[]> {
   // Signal C — 4230 catalog items, indexed by UUID (matching unchanged).
   const materialMap = new Map<string, MaterialRecord>();
   for (const m of allMaterials as MaterialRecord[]) {
-    if (m.item_number && m.item_number.startsWith(HARDSCAPE_PREFIX)) {
+    if (m.item_number && HARDSCAPE_PREFIXES.some((p) => m.item_number!.startsWith(p))) {
       materialMap.set(m.uuid, m);
     }
   }
@@ -267,6 +287,22 @@ export async function detectHardscapeJobs(): Promise<DetectedHardscapeJob[]> {
       }
     }
 
+    // Persisted SM8 job total — reliable across the Quote → Work Order → Completed
+    // lifecycle (line items, and thus quoted_total, are dropped on conversion).
+    const projectTotal = parseFloat(job.total_invoice_amount || '0');
+
+    // ServiceM8 completion date — null when not completed ("0000-00-00 …") or absent.
+    const rawCompletion = String(job.completion_date || '').trim();
+    const sm8CompletionDate = (!rawCompletion || rawCompletion.startsWith('0000-00-00'))
+      ? null
+      : rawCompletion;
+
+    // ServiceM8 quote-creation date — null when zero/empty.
+    const rawQuoteDate = String(job.quote_date || '').trim();
+    const sm8CreatedDate = (!rawQuoteDate || rawQuoteDate.startsWith('0000-00-00'))
+      ? null
+      : rawQuoteDate;
+
     results.push({
       sm8_client_uuid: job.company_uuid || 'unknown',
       sm8_client_name: customerName,
@@ -275,6 +311,9 @@ export async function detectHardscapeJobs(): Promise<DetectedHardscapeJob[]> {
       sm8_status: job.status,
       scope_summary: scopeSummary,
       quoted_total: Number.isFinite(quotedTotal) ? quotedTotal : 0,
+      project_total: Number.isFinite(projectTotal) ? projectTotal : 0,
+      sm8_completion_date: sm8CompletionDate,
+      sm8_created_date: sm8CreatedDate,
       job_address: jobAddress,
       matched_by: matchedBy,
       job_date: job.date || '',

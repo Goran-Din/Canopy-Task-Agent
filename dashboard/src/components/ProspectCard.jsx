@@ -40,8 +40,12 @@ function timeAgo(dateStr) {
 }
 
 function formatDate(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr + 'T12:00:00');
+  if (!dateStr) return 'Not scheduled';
+  // Accept either a date-only string ('2026-06-17') or a full ISO timestamp
+  // ('2026-06-17T07:00:00.000Z') — take just the date portion either way.
+  const datePart = String(dateStr).split('T')[0];
+  const d = new Date(datePart + 'T12:00:00');
+  if (isNaN(d.getTime())) return 'Not scheduled';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 

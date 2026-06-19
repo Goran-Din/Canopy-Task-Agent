@@ -3,9 +3,53 @@ import { pool } from '../db/pool';
 import logger from '../logger';
 import { ProspectStage } from '../types';
 import { runHardscapeSync, isHardscapeSyncRunning } from '../workers/hardscapeSync';
+import { runInvoiceSyncNow, isInvoiceSyncRunning } from '../workers/invoiceSync';
 import { getConfigValue } from '../db/queries';
 
 const router = Router();
+
+// Business timezone. All "today" calculations use US Central so dates don't
+// drift against the server's UTC clock near midnight.
+const BUSINESS_TZ = 'America/Chicago';
+
+// Today's date as 'YYYY-MM-DD' in the business timezone ('en-CA' → ISO order).
+function todayInBusinessTz(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: BUSINESS_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+// Phase 4a billing aggregation. For each prospect, sum its prospect_invoices and
+// list them, computing the DISPLAY status on read (never stored): Paid when the
+// raw Xero status is paid; Overdue when unpaid and past due_date in Central
+// (the `todayParam` placeholder, a 'YYYY-MM-DD' bound to todayInBusinessTz());
+// otherwise Invoiced. total_paid counts only paid invoices' amounts.
+// `p` must be the hardscape_prospects alias in the host query.
+function invoiceAggJoin(todayParam: string): string {
+  return `
+      LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(SUM(pi.amount), 0) AS total_invoiced,
+          COALESCE(SUM(CASE WHEN LOWER(pi.status) = 'paid' THEN pi.amount ELSE 0 END), 0) AS total_paid,
+          COALESCE(json_agg(json_build_object(
+            'invoice_number', pi.invoice_number,
+            'amount', pi.amount,
+            'status', CASE
+                        WHEN LOWER(pi.status) = 'paid' THEN 'Paid'
+                        WHEN pi.due_date IS NOT NULL AND pi.due_date < ${todayParam}::date THEN 'Overdue'
+                        ELSE 'Invoiced'
+                      END,
+            'raw_status', pi.status,
+            'due_date', to_char(pi.due_date, 'YYYY-MM-DD'),
+            'paid_date', to_char(pi.paid_date, 'YYYY-MM-DD'),
+            'note', pi.note,
+            'source', pi.source,
+            'xero_invoice_id', pi.xero_invoice_id
+          ) ORDER BY pi.due_date NULLS LAST, pi.invoice_number), '[]'::json) AS invoices
+        FROM prospect_invoices pi
+        WHERE pi.prospect_id = p.id
+      ) inv ON true`;
+}
 
 const STAGE_LABELS: Record<ProspectStage, string> = {
   request_site_visit: 'Request site visit',
@@ -30,15 +74,26 @@ router.get('/dashboard/prospects', async (_req: Request, res: Response) => {
         p.*,
         u.name AS assigned_to_name,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount, ic.due_date AS invoice_due_date, ic.paid_date AS invoice_paid_date,
+        inv.total_invoiced, inv.total_paid, inv.invoices,
         jc.comment_text AS job_comment,
-        (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = p.id) AS comment_count
+        (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = p.id) AS comment_count,
+        (SELECT pc.content FROM prospect_comments pc WHERE pc.prospect_id = p.id
+           ORDER BY pc.activity_date DESC, pc.id DESC LIMIT 1) AS latest_comment,
+        COALESCE((
+          SELECT json_agg(json_build_object(
+                   'id', r.id, 'due_date', to_char(r.due_date, 'YYYY-MM-DD'), 'note', r.note
+                 ) ORDER BY r.due_date ASC, r.id ASC)
+          FROM prospect_reminders r
+          WHERE r.prospect_id = p.id AND r.status = 'open'
+        ), '[]'::json) AS reminders
       FROM hardscape_prospects p
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
+      ${invoiceAggJoin('$1')}
       WHERE p.stage NOT IN ('completed', 'lost_opportunity') AND NOT p.hidden
       ORDER BY p.stage ASC, p.updated_at DESC
-    `);
+    `, [todayInBusinessTz()]);
 
     res.json({ prospects: result.rows });
   } catch (err) {
@@ -62,23 +117,31 @@ router.get('/dashboard/projects', async (req: Request, res: Response) => {
         p.id, p.sm8_job_number, p.sm8_job_uuid, p.sm8_client_name,
         p.stage, p.crew_assignment, p.scope_summary, p.quoted_total, p.sm8_status,
         p.job_address, p.design_number,
+        p.is_duplicate, p.duplicate_of_prospect_id,
         p.hidden, p.hidden_reason, p.hidden_at,
-        p.gdrive_url, p.gdrive_label,
+        p.gdrive_url, p.gdrive_label, p.client_folder_url,
         p.follow_up_date, p.possible_start_date, p.actual_start_date,
-        p.scope_is_manual, p.quoted_total_is_manual,
+        p.scope_is_manual, p.quoted_total_is_manual, p.project_total,
+        to_char((COALESCE(p.sm8_completion_date, p.completed_at) AT TIME ZONE 'America/Chicago'),
+                'YYYY-MM-DD') AS completed_on,
+        to_char((p.sm8_created_date AT TIME ZONE 'America/Chicago'), 'YYYY-MM-DD') AS quote_created_on,
         p.notes, p.scheduled_start, p.created_at, p.updated_at,
         u.name AS assigned_to_name,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount,
         ic.due_date AS invoice_due_date, ic.paid_date AS invoice_paid_date,
+        inv.total_invoiced, inv.total_paid, inv.invoices,
         jc.comment_text AS job_comment,
-        (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = p.id) AS comment_count
+        (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = p.id) AS comment_count,
+        (SELECT pc.content FROM prospect_comments pc WHERE pc.prospect_id = p.id
+           ORDER BY pc.activity_date DESC, pc.id DESC LIMIT 1) AS latest_comment
       FROM hardscape_prospects p
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
+      ${invoiceAggJoin('$1')}
       ${includeHidden ? '' : 'WHERE NOT p.hidden'}
       ORDER BY p.updated_at DESC
-    `);
+    `, [todayInBusinessTz()]);
 
     res.json({ projects: result.rows });
   } catch (err) {
@@ -129,6 +192,51 @@ router.get('/dashboard/sync-status', async (_req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /dashboard/sync-xero — on-demand Xero invoice sync (the Completed tab's
+// "Sync from Xero" button). Read-only against Xero: pages ALL invoices and
+// refreshes invoice_cache + prospect_invoices — the SAME work the hourly cron
+// does. Returns the structured result so the UI can handle the day-limit case
+// gracefully. A ~60s manual cooldown + single-instance lock prevent spamming.
+// ---------------------------------------------------------------------------
+
+router.post('/dashboard/sync-xero', async (_req: Request, res: Response) => {
+  try {
+    const result = await runInvoiceSyncNow({ manual: true });
+
+    // Already running → 409 (mirror the ServiceM8 sync's contract).
+    if (result.status === 'already_running') {
+      res.status(409).json(result);
+      return;
+    }
+    // ok / day_limited / cooldown / error all carry a structured body the UI
+    // reads; 200 so the client doesn't treat day_limited/cooldown as failures.
+    res.json(result);
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_xero_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ status: 'error', error: 'Xero sync failed' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/sync-xero-status — last Xero invoice-sync result + whether a
+// sync is running now (drives the Completed tab's "Last synced" label).
+// ---------------------------------------------------------------------------
+
+router.get('/dashboard/sync-xero-status', async (_req: Request, res: Response) => {
+  try {
+    const raw = await getConfigValue('xero_invoice_last_sync');
+    let lastSync: unknown = null;
+    if (raw) {
+      try { lastSync = JSON.parse(raw); } catch { lastSync = null; }
+    }
+    res.json({ running: isInvoiceSyncRunning(), last_sync: lastSync });
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_xero_status_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /dashboard/prospects/:id — single prospect with full comment thread
 // ---------------------------------------------------------------------------
 
@@ -140,14 +248,19 @@ router.get('/dashboard/prospects/:id', async (req: Request, res: Response) => {
       SELECT
         p.*,
         u.name AS assigned_to_name,
+        to_char((COALESCE(p.sm8_completion_date, p.completed_at) AT TIME ZONE 'America/Chicago'),
+                'YYYY-MM-DD') AS completed_on,
+        to_char((p.sm8_created_date AT TIME ZONE 'America/Chicago'), 'YYYY-MM-DD') AS quote_created_on,
         ic.invoice_status, ic.invoice_number, ic.invoice_amount, ic.due_date AS invoice_due_date, ic.paid_date AS invoice_paid_date,
+        inv.total_invoiced, inv.total_paid, inv.invoices,
         jc.comment_text AS job_comment
       FROM hardscape_prospects p
       LEFT JOIN users u ON u.telegram_id = p.assigned_to
       LEFT JOIN invoice_cache ic ON ic.sm8_job_uuid = p.sm8_job_uuid
       LEFT JOIN job_comments jc ON jc.sm8_job_uuid = p.sm8_job_uuid
+      ${invoiceAggJoin('$2')}
       WHERE p.id = $1
-    `, [id]);
+    `, [id, todayInBusinessTz()]);
 
     if (prospectResult.rows.length === 0) {
       res.status(404).json({ error: 'Prospect not found' });
@@ -267,6 +380,12 @@ router.patch('/dashboard/prospects/:id', async (req: Request, res: Response) => 
     // If stage changed, also update stage_updated_at
     if (body.stage !== undefined) {
       setClauses.push(`stage_updated_at = NOW()`);
+      // Stamp our own completion date on the transition to 'completed', but only
+      // if not already stamped (COALESCE keeps an existing value). Never set on
+      // other stage changes; never overwritten once set.
+      if (body.stage === 'completed') {
+        setClauses.push(`completed_at = COALESCE(completed_at, NOW())`);
+      }
     }
 
     // Hide / unhide — reversible flag (handled here, not via allowedFields, so
@@ -362,21 +481,121 @@ router.post('/dashboard/prospects/:id/comments', async (req: Request, res: Respo
 });
 
 // ---------------------------------------------------------------------------
+// Follow-up reminders
+// ---------------------------------------------------------------------------
+
+// GET /dashboard/prospects/:id/reminders — open reminders, soonest due first.
+router.get('/dashboard/prospects/:id/reminders', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT id, prospect_id, to_char(due_date, 'YYYY-MM-DD') AS due_date, note, status
+       FROM prospect_reminders
+       WHERE prospect_id = $1 AND status = 'open'
+       ORDER BY due_date ASC, id ASC`,
+      [id]
+    );
+    res.json({ reminders: result.rows });
+  } catch (err) {
+    logger.error({ event: 'reminders_list_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /dashboard/prospects/:id/reminders { due_date, note } — create an open reminder.
+router.post('/dashboard/prospects/:id/reminders', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { due_date, note } = req.body;
+
+    if (!due_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(due_date))) {
+      res.status(400).json({ error: 'due_date (YYYY-MM-DD) is required' });
+      return;
+    }
+    if (!note || !String(note).trim()) {
+      res.status(400).json({ error: 'note is required' });
+      return;
+    }
+
+    const exists = await pool.query('SELECT 1 FROM hardscape_prospects WHERE id = $1', [id]);
+    if (exists.rows.length === 0) {
+      res.status(404).json({ error: 'Prospect not found' });
+      return;
+    }
+
+    const result = await pool.query(
+      `INSERT INTO prospect_reminders (prospect_id, due_date, note)
+       VALUES ($1, $2, $3)
+       RETURNING id, prospect_id, to_char(due_date, 'YYYY-MM-DD') AS due_date, note, status`,
+      [id, due_date, String(note).trim()]
+    );
+
+    // Keep history in the single comment thread.
+    await pool.query(
+      `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
+       VALUES ($1, 'agent', 'Dashboard', $2, NOW())`,
+      [id, `Reminder set for ${due_date}: ${String(note).trim()}`]
+    );
+
+    res.status(201).json({ reminder: result.rows[0] });
+  } catch (err) {
+    logger.error({ event: 'reminder_create_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /dashboard/reminders/:id/done — dismiss a reminder (status='done'). No delete.
+router.post('/dashboard/reminders/:id/done', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `UPDATE prospect_reminders
+       SET status = 'done', updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, prospect_id, to_char(due_date, 'YYYY-MM-DD') AS due_date, note, status`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Reminder not found' });
+      return;
+    }
+    const r = result.rows[0];
+
+    await pool.query(
+      `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
+       VALUES ($1, 'agent', 'Dashboard', $2, NOW())`,
+      [r.prospect_id, `Reminder done: ${r.note}`]
+    );
+
+    res.json({ reminder: r });
+  } catch (err) {
+    logger.error({ event: 'reminder_done_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /dashboard/archive — completed/closed prospects with filters
 // ---------------------------------------------------------------------------
 
 router.get('/dashboard/archive', async (req: Request, res: Response) => {
   try {
     const { outcome, crew, date_from, date_to, search } = req.query;
+    // Hidden rows are excluded by default; ?includeHidden=true reveals them so
+    // hidden lost/duplicate jobs remain auditable in Archive.
+    const includeHidden = req.query.includeHidden === 'true';
 
-    const conditions: string[] = [`p.stage IN ('completed', 'lost_opportunity')`, `NOT p.hidden`];
+    // Archive = unsuccessful OR flagged duplicate. Completed jobs now live in the
+    // dedicated Completed tab, so they are intentionally excluded here.
+    const conditions: string[] = [`(p.stage = 'lost_opportunity' OR p.is_duplicate = true)`];
+    if (!includeHidden) conditions.push(`NOT p.hidden`);
     const values: unknown[] = [];
     let paramIdx = 1;
 
-    if (outcome) {
-      conditions.push(`p.stage = $${paramIdx}`);
-      values.push(outcome);
-      paramIdx++;
+    if (outcome === 'lost_opportunity') {
+      conditions.push(`p.stage = 'lost_opportunity'`);
+    } else if (outcome === 'duplicate') {
+      conditions.push(`p.is_duplicate = true`);
     }
 
     if (crew) {
@@ -437,9 +656,12 @@ const CREW_DISPLAY: Record<string, string> = {
 
 router.get('/dashboard/crew-schedule', async (req: Request, res: Response) => {
   try {
-    const { crew, from_date, to_date } = req.query;
+    const { crew, from_date, to_date, status } = req.query;
 
-    const conditions: string[] = [`cs.status NOT IN ('completed')`];
+    // Default view excludes completed jobs (active calendar). Pass status=completed
+    // to fetch the completed list instead.
+    const conditions: string[] =
+      status === 'completed' ? [`cs.status = 'completed'`] : [`cs.status NOT IN ('completed')`];
     const values: unknown[] = [];
     let paramIdx = 1;
 
@@ -462,8 +684,16 @@ router.get('/dashboard/crew-schedule', async (req: Request, res: Response) => {
     }
 
     const result = await pool.query(`
-      SELECT cs.*, hp.sm8_client_name, hp.sm8_job_number, hp.stage,
+      SELECT cs.*,
+             to_char(cs.start_date, 'YYYY-MM-DD') AS start_date,
+             hp.sm8_client_name, hp.sm8_job_number, hp.stage,
              hp.notes, hp.assigned_to,
+             hp.needs_sealing, hp.needs_landscape,
+             hp.job_address, hp.design_number,
+             hp.client_folder_url, hp.gdrive_url, hp.gdrive_label,
+             (SELECT COUNT(*)::int FROM prospect_comments pc WHERE pc.prospect_id = hp.id) AS comment_count,
+             (SELECT pc.content FROM prospect_comments pc WHERE pc.prospect_id = hp.id
+                ORDER BY pc.activity_date DESC, pc.id DESC LIMIT 1) AS latest_comment,
              ic.invoice_status, ic.invoice_number, ic.invoice_amount
       FROM crew_schedule cs
       JOIN hardscape_prospects hp ON cs.prospect_id = hp.id
@@ -500,9 +730,12 @@ router.get('/dashboard/crew-schedule/next-available', async (req: Request, res: 
     `, [crew]);
 
     const row = result.rows[0];
-    const nextAvailable = row.next_available
+    const today = todayInBusinessTz();
+    const computed = row.next_available
       ? new Date(row.next_available).toISOString().split('T')[0]
-      : new Date().toISOString().split('T')[0];
+      : today;
+    // Never return a past date — floor at today (US Central).
+    const nextAvailable = computed < today ? today : computed;
 
     res.json({
       crew,
@@ -548,7 +781,7 @@ router.post('/dashboard/crew-schedule', async (req: Request, res: Response) => {
     // 3. Add comment
     const crewLabel = CREW_DISPLAY[crew] || crew;
     const dateFormatted = new Date(start_date + 'T12:00:00').toLocaleDateString('en-US', {
-      month: 'short', day: 'numeric', year: 'numeric',
+      timeZone: BUSINESS_TZ, month: 'short', day: 'numeric', year: 'numeric',
     });
     await pool.query(
       `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
@@ -563,9 +796,11 @@ router.post('/dashboard/crew-schedule', async (req: Request, res: Response) => {
       WHERE crew = $1 AND status IN ('scheduled', 'in_progress')
     `, [crew]);
 
-    const nextAvailable = nextResult.rows[0].next_available
+    const today = todayInBusinessTz();
+    const computedNext = nextResult.rows[0].next_available
       ? new Date(nextResult.rows[0].next_available).toISOString().split('T')[0]
-      : new Date().toISOString().split('T')[0];
+      : today;
+    const nextAvailable = computedNext < today ? today : computedNext;
 
     res.status(201).json({
       schedule_entry: scheduleResult.rows[0],
@@ -712,6 +947,182 @@ router.delete('/dashboard/crew-schedule/:id', async (req: Request, res: Response
     res.json({ deleted: true });
   } catch (err) {
     logger.error({ event: 'crew_schedule_delete_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /dashboard/crew-schedule/:id/complete — mark a job completed
+// ---------------------------------------------------------------------------
+
+router.post('/dashboard/crew-schedule/:id/complete', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const current = await pool.query('SELECT * FROM crew_schedule WHERE id = $1', [id]);
+    if (current.rows.length === 0) {
+      res.status(404).json({ error: 'Schedule entry not found' });
+      return;
+    }
+
+    // 1. Mark the schedule entry completed (fill actual_days if not set).
+    const updateResult = await pool.query(
+      `UPDATE crew_schedule
+       SET status = 'completed',
+           actual_days = COALESCE(actual_days, estimated_days),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+    const entry = updateResult.rows[0];
+
+    // 2. Move the linked prospect to the completed stage (stamp our completion
+    //    date only if not already set — never overwrite an existing stamp).
+    await pool.query(
+      `UPDATE hardscape_prospects
+       SET stage = 'completed', stage_updated_at = NOW(),
+           completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+       WHERE id = $1`,
+      [entry.prospect_id]
+    );
+
+    // 3. Record a comment on the prospect.
+    const dateFormatted = new Date().toLocaleDateString('en-US', {
+      timeZone: BUSINESS_TZ, month: 'short', day: 'numeric', year: 'numeric',
+    });
+    await pool.query(
+      `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
+       VALUES ($1, 'agent', 'Dashboard', $2, NOW())`,
+      [entry.prospect_id, `Job marked completed on ${dateFormatted}`]
+    );
+
+    res.json({ schedule_entry: entry });
+  } catch (err) {
+    logger.error({ event: 'crew_schedule_complete_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /dashboard/crew-schedule/:id/status — set job progress status
+//   scheduled    → crew_schedule.status='scheduled' AND prospect → scheduled_for_work
+//   in_progress  → crew_schedule.status='in_progress' AND prospect → work_in_progress
+//   paused       → crew_schedule.status='paused' (hold, requires reason); prospect
+//                  stage is left unchanged. A pause is NOT a delay — it never
+//                  shifts other jobs.
+// (Completed is handled by the /complete endpoint above → prospect = completed.)
+// ---------------------------------------------------------------------------
+
+const JOB_STATUS_VALUES = ['scheduled', 'in_progress', 'paused'] as const;
+
+router.post('/dashboard/crew-schedule/:id/status', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { status, reason } = req.body;
+
+    if (!JOB_STATUS_VALUES.includes(status)) {
+      res.status(400).json({ error: `status must be one of: ${JOB_STATUS_VALUES.join(', ')}` });
+      return;
+    }
+    if (status === 'paused' && (!reason || !String(reason).trim())) {
+      res.status(400).json({ error: 'reason is required when pausing' });
+      return;
+    }
+
+    const current = await pool.query('SELECT * FROM crew_schedule WHERE id = $1', [id]);
+    if (current.rows.length === 0) {
+      res.status(404).json({ error: 'Schedule entry not found' });
+      return;
+    }
+    const entry = current.rows[0];
+
+    const updated = await pool.query(
+      `UPDATE crew_schedule SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
+      [status, id]
+    );
+
+    // Keep the prospect's pipeline stage in sync with the job status.
+    //   in_progress → work_in_progress
+    //   scheduled   → scheduled_for_work (e.g. resumed/un-started)
+    //   paused      → leave unchanged (hold; stays work_in_progress)
+    if (status === 'in_progress') {
+      await pool.query(
+        `UPDATE hardscape_prospects
+         SET stage = 'work_in_progress', stage_updated_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [entry.prospect_id]
+      );
+    } else if (status === 'scheduled') {
+      await pool.query(
+        `UPDATE hardscape_prospects
+         SET stage = 'scheduled_for_work', stage_updated_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+        [entry.prospect_id]
+      );
+    }
+
+    // Append a line to the prospect's single comment thread.
+    const note =
+      status === 'in_progress' ? 'Work started'
+      : status === 'paused'    ? `Paused: ${String(reason).trim()}`
+      : 'Set back to Scheduled';
+    await pool.query(
+      `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
+       VALUES ($1, 'agent', 'Dashboard', $2, NOW())`,
+      [entry.prospect_id, note]
+    );
+
+    res.json({ schedule_entry: updated.rows[0] });
+  } catch (err) {
+    logger.error({ event: 'crew_schedule_status_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /dashboard/prospects/:id/flags — toggle a follow-up flag
+//   body: { flag: 'needs_sealing' | 'needs_landscape', value: boolean }
+// Writes the boolean on the prospect and appends a thread line.
+// ---------------------------------------------------------------------------
+
+const PROSPECT_FLAGS: Record<string, string> = {
+  needs_sealing: 'Needs Sealing',
+  needs_landscape: 'Needs Landscape',
+};
+
+router.post('/dashboard/prospects/:id/flags', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { flag, value } = req.body;
+
+    if (!Object.prototype.hasOwnProperty.call(PROSPECT_FLAGS, flag)) {
+      res.status(400).json({ error: `flag must be one of: ${Object.keys(PROSPECT_FLAGS).join(', ')}` });
+      return;
+    }
+    const boolValue = value === true || value === 'true';
+
+    // Column name is from the fixed whitelist above — safe to interpolate.
+    const updated = await pool.query(
+      `UPDATE hardscape_prospects SET ${flag} = $1, updated_at = NOW() WHERE id = $2
+       RETURNING id, needs_sealing, needs_landscape`,
+      [boolValue, id]
+    );
+    if (updated.rows.length === 0) {
+      res.status(404).json({ error: 'Prospect not found' });
+      return;
+    }
+
+    const label = PROSPECT_FLAGS[flag];
+    await pool.query(
+      `INSERT INTO prospect_comments (prospect_id, source, author, content, activity_date)
+       VALUES ($1, 'agent', 'Dashboard', $2, NOW())`,
+      [id, `${boolValue ? 'Flagged' : 'Unflagged'}: ${label}`]
+    );
+
+    res.json({ prospect: updated.rows[0] });
+  } catch (err) {
+    logger.error({ event: 'prospect_flag_error', error: err instanceof Error ? err.message : String(err) });
     res.status(500).json({ error: 'Internal server error' });
   }
 });

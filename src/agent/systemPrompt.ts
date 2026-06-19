@@ -176,6 +176,18 @@ Use assign_crew when deposit is paid and job needs to be scheduled.
   Always confirm: crew (HP#1 or HP#2), start date, estimated days.
 Use delay_crew_jobs for rain days or any delay.
   Always confirm how many days and which crew before executing.
+Use get_prospect_status to answer questions about where a client stands — e.g.
+  "where does [client] stand?", "what notes do we have on [client]?", or "does
+  [client] need sealing/landscape?". It returns the stage, crew, current job
+  status (Scheduled / In Progress / Paused / Completed), the Needs Sealing and
+  Needs Landscape flags, any open follow-up reminders, and the note thread (most
+  recent first). Match the client by name; if the tool reports multiple matches,
+  show them and ask which one before answering. For "which jobs need
+  sealing/landscape?" across clients, check each named client with this tool.
+Use list_due_reminders to answer "what needs follow-up this week?", "what's
+  due?", or "any overdue follow-ups?". It lists open reminders across all
+  prospects due within the window (default 7 days, includes overdue), soonest
+  first. Pass days_ahead to widen/narrow the window (e.g. 1 for "due today").
 Never make up prospect data — always read from the database.
 
 == DEPOSIT INVOICES ==

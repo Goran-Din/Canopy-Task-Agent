@@ -10,7 +10,7 @@ import { updateTaskStatus } from '../tools/vikunja';
 import { notifyUser } from '../tools/telegram_notify';
 import { queryXeroInvoices } from '../tools/xero';
 import { getScheduleCache } from '../workers/landscapeSync';
-import { createProspect, updateProspectStage, assignCrew, delayCrewJobs, getPipelineSummaryText } from '../tools/hardscape';
+import { createProspect, updateProspectStage, assignCrew, delayCrewJobs, getPipelineSummaryText, getProspectStatus, listDueReminders } from '../tools/hardscape';
 import { handleDepositInvoiceRequest, confirmDepositInvoice, hasPendingDeposit } from '../tools/depositInvoice';
 import { handleCreateXeroContact } from '../tools/xeroContacts';
 import { handleCreateXeroInvoice } from '../tools/xeroInvoice';
@@ -124,6 +124,16 @@ async function executeToolCall(
 
       case 'get_pipeline_summary': {
         return await getPipelineSummaryText();
+      }
+
+      case 'get_prospect_status': {
+        return await getProspectStatus(toolInput.client_name as string);
+      }
+
+      case 'list_due_reminders': {
+        return await listDueReminders(
+          typeof toolInput.days_ahead === 'number' ? toolInput.days_ahead : 7
+        );
       }
 
       case 'get_job_address': {

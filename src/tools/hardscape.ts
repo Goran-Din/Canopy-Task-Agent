@@ -250,3 +250,141 @@ function addDaysToDate(dateStr: string, days: number): string {
   d.setDate(d.getDate() + days);
   return d.toISOString().split('T')[0];
 }
+
+const JOB_STATUS_LABELS: Record<string, string> = {
+  scheduled: 'Scheduled',
+  in_progress: 'In Progress',
+  paused: 'Paused',
+  completed: 'Completed',
+};
+
+/**
+ * Read-only status lookup for the Telegram agent. Matches a prospect by name and
+ * returns its stage, crew, current schedule status, follow-up flags, and the
+ * prospect_comments thread (most recent first). If more than one prospect
+ * matches, returns the list so the agent can ask which one.
+ */
+export async function getProspectStatus(clientName: string): Promise<string> {
+  try {
+    const matches = await pool.query(
+      `SELECT * FROM hardscape_prospects
+       WHERE LOWER(sm8_client_name) LIKE LOWER($1)
+       ORDER BY updated_at DESC`,
+      [`%${clientName}%`]
+    );
+
+    if (matches.rows.length === 0) {
+      return `❌ No hardscape prospect found matching "${clientName}".`;
+    }
+    if (matches.rows.length > 1) {
+      const list = matches.rows
+        .map((r) => `• ${r.sm8_client_name}${r.sm8_job_number ? ` (Job #${r.sm8_job_number})` : ''} — ${STAGE_LABELS[r.stage as ProspectStage] || r.stage}`)
+        .join('\n');
+      return `Multiple prospects match "${clientName}". Which one?\n${list}`;
+    }
+
+    const p = matches.rows[0];
+
+    // Latest schedule entry (most recent start) for the live job status.
+    const sched = await pool.query(
+      `SELECT crew, status, to_char(start_date, 'YYYY-MM-DD') AS start_date, estimated_days
+       FROM crew_schedule WHERE prospect_id = $1
+       ORDER BY start_date DESC LIMIT 1`,
+      [p.id]
+    );
+    const s = sched.rows[0];
+
+    // Open follow-up reminders, soonest due first.
+    const reminders = await pool.query(
+      `SELECT to_char(due_date, 'YYYY-MM-DD') AS due_date, note
+       FROM prospect_reminders WHERE prospect_id = $1 AND status = 'open'
+       ORDER BY due_date ASC, id ASC`,
+      [p.id]
+    );
+
+    // Comment thread, most recent first.
+    const comments = await pool.query(
+      `SELECT author, source, content, to_char(activity_date AT TIME ZONE 'America/Chicago', 'Mon DD, YYYY') AS day
+       FROM prospect_comments WHERE prospect_id = $1
+       ORDER BY activity_date DESC LIMIT 20`,
+      [p.id]
+    );
+
+    const lines: string[] = [];
+    lines.push(`🏗️ ${p.sm8_client_name}${p.sm8_job_number ? ` (Job #${p.sm8_job_number})` : ''}`);
+    lines.push(`Stage: ${STAGE_LABELS[p.stage as ProspectStage] || p.stage}`);
+    lines.push(`Crew: ${p.crew_assignment ? CREW_DISPLAY[p.crew_assignment as HardscapeCrewId] : 'Unassigned'}`);
+    if (s) {
+      lines.push(`Schedule status: ${JOB_STATUS_LABELS[s.status] || s.status}${s.start_date ? ` (start ${s.start_date}, ${s.estimated_days} day${s.estimated_days !== 1 ? 's' : ''})` : ''}`);
+    } else {
+      lines.push('Schedule status: Not scheduled');
+    }
+    const flags: string[] = [];
+    if (p.needs_sealing) flags.push('Needs Sealing');
+    if (p.needs_landscape) flags.push('Needs Landscape');
+    lines.push(`Follow-up flags: ${flags.length ? flags.join(', ') : 'None'}`);
+
+    lines.push('\nOpen reminders (soonest first):');
+    if (reminders.rows.length === 0) {
+      lines.push('  (none)');
+    } else {
+      for (const r of reminders.rows) {
+        lines.push(`  • [due ${r.due_date}] ${r.note}`);
+      }
+    }
+
+    lines.push('\nNotes (most recent first):');
+    if (comments.rows.length === 0) {
+      lines.push('  (no notes yet)');
+    } else {
+      for (const c of comments.rows) {
+        lines.push(`  • [${c.day}] ${c.content}`);
+      }
+    }
+
+    return lines.join('\n');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ event: 'get_prospect_status_error', error: msg });
+    return `❌ Failed to read prospect status: ${msg}`;
+  }
+}
+
+/**
+ * Read-only list of open follow-up reminders due within `daysAhead` days
+ * (default 7), across all prospects, soonest due first. Lets the agent answer
+ * "what needs follow-up this week?". Dates are evaluated in America/Chicago.
+ */
+export async function listDueReminders(daysAhead = 7): Promise<string> {
+  try {
+    const days = Number.isFinite(daysAhead) && daysAhead > 0 ? Math.floor(daysAhead) : 7;
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());
+
+    const result = await pool.query(
+      `SELECT to_char(r.due_date, 'YYYY-MM-DD') AS due_date, r.note,
+              hp.sm8_client_name, hp.sm8_job_number
+       FROM prospect_reminders r
+       JOIN hardscape_prospects hp ON hp.id = r.prospect_id
+       WHERE r.status = 'open' AND r.due_date <= ($1::date + ($2 || ' days')::interval)
+       ORDER BY r.due_date ASC, r.id ASC`,
+      [today, days]
+    );
+
+    if (result.rows.length === 0) {
+      return `No open follow-ups due in the next ${days} day${days !== 1 ? 's' : ''}.`;
+    }
+
+    const lines = result.rows.map((r) => {
+      const job = r.sm8_job_number ? ` (Job #${r.sm8_job_number})` : '';
+      const overdue = r.due_date < today ? ' — OVERDUE' : '';
+      return `• ${r.sm8_client_name}${job} — ${r.note} (due ${r.due_date})${overdue}`;
+    });
+    return `🔔 Follow-ups due within ${days} day${days !== 1 ? 's' : ''}:\n${lines.join('\n')}`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error({ event: 'list_due_reminders_error', error: msg });
+    return `❌ Failed to list due reminders: ${msg}`;
+  }
+}

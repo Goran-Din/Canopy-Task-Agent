@@ -129,6 +129,20 @@ ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS possible_start_date    
 ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS actual_start_date      DATE;
 ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS scope_is_manual        BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS quoted_total_is_manual BOOLEAN NOT NULL DEFAULT false;
+-- Phase 4a: persisted ServiceM8 project total (job.total_invoice_amount), refreshed
+-- on every SM8 pull. Survives the Quote → Work Order conversion (line items don't).
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS project_total          NUMERIC(12,2);
+-- Completion dates: sm8_completion_date = ServiceM8's job.completion_date (authoritative,
+-- refreshed every SM8 pull, NULL while SM8 hasn't completed the job); completed_at = stamped
+-- by the dashboard when WE move a job to stage='completed' (only if still NULL). The feed
+-- exposes COALESCE(sm8_completion_date, completed_at) as completed_on.
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS sm8_completion_date    TIMESTAMPTZ;
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS completed_at           TIMESTAMPTZ;
+-- ServiceM8 quote-creation timestamp (job.quote_date), refreshed every SM8 pull.
+-- The real "when the quote was created" date the List "Date" column shows (our
+-- created_at clusters on the seed import date and isn't meaningful). NULL when SM8
+-- has no quote_date; the feed exposes it as quote_created_on (Central date).
+ALTER TABLE hardscape_prospects ADD COLUMN IF NOT EXISTS sm8_created_date       TIMESTAMPTZ;
 
 CREATE INDEX IF NOT EXISTS idx_prospects_crew ON hardscape_prospects(crew_assignment);
 CREATE INDEX IF NOT EXISTS idx_prospects_sm8_job ON hardscape_prospects(sm8_job_uuid);
@@ -193,6 +207,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_cache_job ON invoice_cache(sm8_job
 CREATE INDEX IF NOT EXISTS idx_invoice_cache_client ON invoice_cache(sm8_client_name);
 CREATE INDEX IF NOT EXISTS idx_invoice_cache_division ON invoice_cache(division);
 CREATE INDEX IF NOT EXISTS idx_invoice_cache_status ON invoice_cache(invoice_status);
+
+-- Prospect invoices (Phase 4a): ALL Xero invoices attached to a hardscape prospect
+-- (multiple per prospect), plus manual rows. The new billing source the Completed
+-- view reads in 4b. invoice_cache (above) stays as the single-match badge source.
+--   • source = 'xero'   — synced from Xero by invoiceSync; upserted by xero_invoice_id.
+--   • source = 'manual' — hand-entered; never touched by the sync.
+-- status holds the RAW Xero status (paid / authorised / voided); the display status
+-- (Paid / Invoiced / Overdue) is computed on read in the feed (Overdue = unpaid past
+-- due_date in America/Chicago), never stored.
+CREATE TABLE IF NOT EXISTS prospect_invoices (
+  id              SERIAL PRIMARY KEY,
+  prospect_id     INTEGER NOT NULL REFERENCES hardscape_prospects(id) ON DELETE CASCADE,
+  invoice_number  TEXT,
+  amount          NUMERIC,
+  note            TEXT,                       -- the raw Xero Reference (for source='xero')
+  source          TEXT NOT NULL DEFAULT 'manual',
+  xero_invoice_id TEXT,
+  status          TEXT,                       -- raw Xero status: paid / authorised / voided
+  due_date        DATE,
+  paid_date       DATE,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_prospect_invoices_prospect ON prospect_invoices(prospect_id);
+CREATE INDEX IF NOT EXISTS idx_prospect_invoices_source ON prospect_invoices(source);
+-- Idempotency: at most one row per Xero invoice (manual rows keep NULL xero_invoice_id).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_prospect_invoices_xero
+  ON prospect_invoices (xero_invoice_id) WHERE xero_invoice_id IS NOT NULL;
 
 -- Job comments: one editable note per ServiceM8 job (landscape + hardscape); upserted on sm8_job_uuid.
 CREATE TABLE IF NOT EXISTS job_comments (

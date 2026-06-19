@@ -3,8 +3,8 @@ import InvoiceBadge from './InvoiceBadge';
 
 const OUTCOME_FILTERS = [
   { key: 'all', label: 'All' },
-  { key: 'completed', label: 'Completed' },
   { key: 'lost_opportunity', label: 'Lost Opportunity' },
+  { key: 'duplicate', label: 'Duplicate' },
 ];
 
 const CREW_FILTERS = [
@@ -29,6 +29,7 @@ export default function ArchiveTab() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [search, setSearch] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
   const [selected, setSelected] = useState(null);
   const [reopening, setReopening] = useState(false);
 
@@ -41,6 +42,7 @@ export default function ArchiveTab() {
       if (dateFrom) params.set('date_from', dateFrom);
       if (dateTo) params.set('date_to', dateTo);
       if (search) params.set('search', search);
+      if (showHidden) params.set('includeHidden', 'true');
 
       const qs = params.toString();
       const res = await fetch(`/dashboard/archive${qs ? '?' + qs : ''}`, {
@@ -54,7 +56,7 @@ export default function ArchiveTab() {
     } finally {
       setLoading(false);
     }
-  }, [outcome, crew, dateFrom, dateTo, search]);
+  }, [outcome, crew, dateFrom, dateTo, search, showHidden]);
 
   useEffect(() => {
     fetchArchive();
@@ -137,6 +139,17 @@ export default function ArchiveTab() {
           placeholder="Search clients..."
           className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-blue-500 w-48"
         />
+
+        <button
+          onClick={() => setShowHidden((v) => !v)}
+          className={`px-3 py-1.5 text-xs font-medium rounded-lg border ${
+            showHidden
+              ? 'bg-gray-700 text-white border-gray-700'
+              : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+          }`}
+        >
+          {showHidden ? '✓ Showing hidden' : 'Show hidden'}
+        </button>
       </div>
 
       {/* Loading */}
@@ -188,19 +201,24 @@ export default function ArchiveTab() {
                       isSelected ? 'bg-blue-50' : ''
                     }`}
                   >
-                    <td className="py-2 pr-4 font-medium text-gray-900">{p.sm8_client_name}</td>
+                    <td className="py-2 pr-4 font-medium text-gray-900">
+                      {p.sm8_client_name}
+                      {p.hidden && (
+                        <span className="ml-1.5 text-[10px] font-normal text-amber-600" title={p.hidden_reason || 'hidden'}>🚫 hidden</span>
+                      )}
+                    </td>
                     <td className="py-2 pr-4 font-mono text-gray-500">
                       {p.sm8_job_number ? `#${p.sm8_job_number}` : '—'}
                     </td>
                     <td className="py-2 pr-4">
                       <span
                         className={`px-2 py-0.5 rounded-full font-semibold ${
-                          p.stage === 'completed'
-                            ? 'bg-green-100 text-green-700'
+                          p.is_duplicate
+                            ? 'bg-amber-100 text-amber-700'
                             : 'bg-red-100 text-red-600'
                         }`}
                       >
-                        {p.stage === 'completed' ? 'Completed' : 'Lost Opportunity'}
+                        {p.is_duplicate ? 'Duplicate' : 'Lost Opportunity'}
                       </span>
                     </td>
                     <td className="py-2 pr-4 text-gray-600">

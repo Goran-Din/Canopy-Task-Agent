@@ -4,6 +4,7 @@ import CommentField from './CommentField';
 import {
   STAGE_STYLES,
   STAGE_KEYS,
+  SELECTABLE_STAGE_KEYS,
   QUOTE_STAGES,
   PRODUCTION_STAGES,
   CREW_OPTIONS,
@@ -29,6 +30,28 @@ function formatDate(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d)) return '—';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// tz-safe format for a date-only 'YYYY-MM-DD' string (e.g. quote_created_on from
+// the feed) — builds the Date from explicit parts so it never shifts a day in a
+// non-UTC browser (same approach as CompletedTab's billing-block dates).
+function formatDateOnly(iso) {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-').map(Number);
+  if (!y || !m || !d) return formatDate(iso);
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// The List "Date" = real SM8 quote-created date (quote_created_on), falling back
+// to our created_at for any row without an SM8 date (manual/non-SM8 rows) so the
+// column is never blank.
+function listDateDisplay(p) {
+  return p.quote_created_on ? formatDateOnly(p.quote_created_on) : formatDate(p.created_at);
+}
+// Sortable epoch for the same value (quote_created_on first, else created_at).
+function listDateSortValue(p) {
+  const src = p.quote_created_on ? `${p.quote_created_on}T00:00:00` : p.created_at;
+  return new Date(src || 0).getTime();
 }
 
 // "Last synced" relative-time label for the sync button.
@@ -70,8 +93,13 @@ function SummaryCard({ label, value, accent }) {
 }
 
 // Inline status dropdown — colored by phase, PATCHes stage on change.
+// request_site_visit is not offered (see SELECTABLE_STAGE_KEYS); a row that is
+// somehow already on an unselectable stage still shows its current value.
 function StatusSelect({ value, onChange, disabled }) {
   const style = STAGE_STYLES[value] || STAGE_STYLES.request_site_visit;
+  const options = SELECTABLE_STAGE_KEYS.includes(value)
+    ? SELECTABLE_STAGE_KEYS
+    : [value, ...SELECTABLE_STAGE_KEYS];
   return (
     <select
       value={value}
@@ -81,9 +109,9 @@ function StatusSelect({ value, onChange, disabled }) {
       className="rounded-full text-xs font-semibold border-none outline-none cursor-pointer px-2 py-1 appearance-none disabled:opacity-50"
       style={{ backgroundColor: style.bg, color: style.text }}
     >
-      {STAGE_KEYS.map((k) => (
+      {options.map((k) => (
         <option key={k} value={k} style={{ backgroundColor: '#fff', color: '#111827' }}>
-          {STAGE_STYLES[k].label}
+          {STAGE_STYLES[k]?.label || k}
         </option>
       ))}
     </select>
@@ -386,9 +414,6 @@ function MobileCard({ p, saving, onPatch, onHide, onUnhide }) {
         <CardRow label="Status">
           <StatusSelect value={p.stage} disabled={saving} onChange={(stage) => onPatch(p.id, { stage })} />
         </CardRow>
-        <CardRow label="Crew">
-          <CrewSelect value={p.crew_assignment} disabled={saving} onChange={(crew) => onPatch(p.id, { crew_assignment: crew })} />
-        </CardRow>
         <CardRow label="Design #">
           <DesignNumberCell value={p.design_number} disabled={saving} onSave={(design_number) => onPatch(p.id, { design_number })} />
         </CardRow>
@@ -403,12 +428,6 @@ function MobileCard({ p, saving, onPatch, onHide, onUnhide }) {
         <CardRow label="Follow-Up">
           <DateCell value={p.follow_up_date} disabled={saving} onSave={(follow_up_date) => onPatch(p.id, { follow_up_date })} />
         </CardRow>
-        <CardRow label="Possible Start">
-          <DateCell value={p.possible_start_date} disabled={saving} onSave={(possible_start_date) => onPatch(p.id, { possible_start_date })} />
-        </CardRow>
-        <CardRow label="Actual Start">
-          <DateCell value={p.actual_start_date} disabled={saving} onSave={(actual_start_date) => onPatch(p.id, { actual_start_date })} />
-        </CardRow>
         <CardRow label="GDrive">
           <GDriveCell url={p.gdrive_url} label={p.gdrive_label} disabled={saving} onSave={(patch) => onPatch(p.id, patch)} />
         </CardRow>
@@ -416,7 +435,7 @@ function MobileCard({ p, saving, onPatch, onHide, onUnhide }) {
           <TextCell value={p.notes} disabled={saving} placeholder="Add a note…" widthClass="w-full"
             onSave={(notes) => onPatch(p.id, { notes })} />
         </CardRow>
-        <CardRow label="Date"><span className="text-gray-500">{formatDate(p.created_at)}</span></CardRow>
+        <CardRow label="Date"><span className="text-gray-500">{listDateDisplay(p)}</span></CardRow>
         <CardRow label="Job note">
           {p.sm8_job_uuid ? (
             <CommentField jobUuid={p.sm8_job_uuid} division="hardscape" initialComment={p.job_comment || ''} />
@@ -445,14 +464,13 @@ const SORTABLE = {
   customer: (p) => (p.sm8_client_name || '').toLowerCase(),
   status: (p) => STAGE_KEYS.indexOf(p.stage),
   value: (p) => Number(p.quoted_total) || 0,
-  date: (p) => new Date(p.created_at || 0).getTime(),
+  date: (p) => listDateSortValue(p),
 };
 
 export default function ListTab() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
   const [crewFilter, setCrewFilter] = useState('all');
   const [invoiceFilter, setInvoiceFilter] = useState('all');
   const [showHidden, setShowHidden] = useState(false);
@@ -460,6 +478,13 @@ export default function ListTab() {
   const [sortDir, setSortDir] = useState('desc');
   const [expanded, setExpanded] = useState(null);
   const [savingId, setSavingId] = useState(null);
+  // Per-section collapse state (List sections). Keyed by section key; absent/false
+  // = expanded (the default). Independent per section; not persisted.
+  const [collapsedSections, setCollapsedSections] = useState({});
+  const toggleSection = useCallback(
+    (key) => setCollapsedSections((c) => ({ ...c, [key]: !c[key] })),
+    []
+  );
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);   // { text, kind: 'ok'|'err' }
   const [lastSync, setLastSync] = useState(null); // parsed config_store value
@@ -577,13 +602,15 @@ export default function ListTab() {
 
   const filtered = useMemo(() => {
     let rows = projects.filter((p) => {
+      // List tab scope: only the two quote stages; duplicates live in Archive.
+      if (p.stage !== 'pending_quote' && p.stage !== 'quote_sent') return false;
+      if (p.is_duplicate) return false;
       if (!showHidden && p.hidden) return false;
       if (search) {
         const q = search.toLowerCase();
         const hay = `${p.sm8_client_name || ''} ${p.sm8_job_number || ''} ${p.design_number || ''} ${p.job_address || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
-      if (statusFilter !== 'all' && p.stage !== statusFilter) return false;
       if (crewFilter === 'unassigned' && p.crew_assignment) return false;
       if ((crewFilter === 'hp1' || crewFilter === 'hp2') && p.crew_assignment !== crewFilter) return false;
       if (invoiceFilter !== 'all') {
@@ -602,7 +629,13 @@ export default function ListTab() {
       return 0;
     });
     return rows;
-  }, [projects, search, statusFilter, crewFilter, invoiceFilter, sortKey, sortDir, showHidden]);
+  }, [projects, search, crewFilter, invoiceFilter, sortKey, sortDir, showHidden]);
+
+  // Two labeled sections: Needs quote (pending_quote) and Quote sent (quote_sent).
+  const listSections = useMemo(() => ([
+    { key: 'pending_quote', label: 'Needs quote', rows: filtered.filter((p) => p.stage === 'pending_quote') },
+    { key: 'quote_sent', label: 'Quote sent — follow up', rows: filtered.filter((p) => p.stage === 'quote_sent') },
+  ]), [filtered]);
 
   const summary = useMemo(() => {
     const visible = projects.filter((p) => !p.hidden);
@@ -664,16 +697,6 @@ export default function ListTab() {
           className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:border-teal-500 w-full sm:w-56"
         />
         <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700 w-full sm:w-auto"
-        >
-          <option value="all">All statuses</option>
-          {STAGE_KEYS.map((k) => (
-            <option key={k} value={k}>{STAGE_STYLES[k].label}</option>
-          ))}
-        </select>
-        <select
           value={crewFilter}
           onChange={(e) => setCrewFilter(e.target.value)}
           className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none focus:border-teal-500 bg-white text-gray-700 w-full sm:w-auto"
@@ -727,21 +750,36 @@ export default function ListTab() {
                 <th className="py-2.5 px-3 font-medium">Scope</th>
                 <th className="py-2.5 px-3 font-medium">ServiceM8 Status</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('status')}>Status{sortArrow('status')}</th>
-                <th className="py-2.5 px-3 font-medium">Crew</th>
                 <th className="py-2.5 px-3 font-medium">Invoice</th>
                 <th className={`py-2.5 px-3 font-medium text-right ${headerBtn}`} onClick={() => toggleSort('value')}>Value{sortArrow('value')}</th>
                 <th className="py-2.5 px-3 font-medium">Follow-Up</th>
-                <th className="py-2.5 px-3 font-medium">Possible Start</th>
-                <th className="py-2.5 px-3 font-medium">Actual Start</th>
                 <th className="py-2.5 px-3 font-medium">Notes</th>
                 <th className={`py-2.5 px-3 font-medium ${headerBtn}`} onClick={() => toggleSort('date')}>Date{sortArrow('date')}</th>
                 <th className="hs-sticky-right py-2.5 px-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => {
-                const invoice = buildInvoice(p);
-                const isOpen = expanded === p.id;
+              {listSections.map((sec) => {
+                const sectionCollapsed = !!collapsedSections[sec.key];
+                return (
+                <Fragment key={`sec-${sec.key}`}>
+                  <tr
+                    className="bg-gray-50 cursor-pointer select-none hover:bg-gray-100"
+                    onClick={() => toggleSection(sec.key)}
+                  >
+                    <td colSpan={13} className="py-1.5 px-3 text-[11px] font-semibold text-gray-600">
+                      <span className="inline-block w-3 text-gray-400">{sectionCollapsed ? '▸' : '▾'}</span>
+                      {sec.label} <span className="text-gray-400 font-normal">· {sec.rows.length}</span>
+                    </td>
+                  </tr>
+                  {!sectionCollapsed && sec.rows.length === 0 && (
+                    <tr>
+                      <td colSpan={13} className="py-2 px-3 text-xs text-gray-400 italic">No jobs in this section.</td>
+                    </tr>
+                  )}
+                  {!sectionCollapsed && sec.rows.map((p) => {
+                    const invoice = buildInvoice(p);
+                    const isOpen = expanded === p.id;
                 return (
                   <Fragment key={p.id}>
                     <tr
@@ -798,13 +836,6 @@ export default function ListTab() {
                           onChange={(stage) => patchProject(p.id, { stage })}
                         />
                       </td>
-                      <td className="py-2 px-3 whitespace-nowrap">
-                        <CrewSelect
-                          value={p.crew_assignment}
-                          disabled={savingId === p.id}
-                          onChange={(crew) => patchProject(p.id, { crew_assignment: crew })}
-                        />
-                      </td>
                       <td className="py-2 px-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                         <InvoiceBadge invoice={invoice} division="hardscape" />
                       </td>
@@ -823,20 +854,6 @@ export default function ListTab() {
                         />
                       </td>
                       <td className="py-2 px-3 whitespace-nowrap">
-                        <DateCell
-                          value={p.possible_start_date}
-                          disabled={savingId === p.id}
-                          onSave={(possible_start_date) => patchProject(p.id, { possible_start_date })}
-                        />
-                      </td>
-                      <td className="py-2 px-3 whitespace-nowrap">
-                        <DateCell
-                          value={p.actual_start_date}
-                          disabled={savingId === p.id}
-                          onSave={(actual_start_date) => patchProject(p.id, { actual_start_date })}
-                        />
-                      </td>
-                      <td className="py-2 px-3 whitespace-nowrap">
                         <TextCell
                           value={p.notes}
                           disabled={savingId === p.id}
@@ -845,7 +862,7 @@ export default function ListTab() {
                           onSave={(notes) => patchProject(p.id, { notes })}
                         />
                       </td>
-                      <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{formatDate(p.created_at)}</td>
+                      <td className="py-2 px-3 text-gray-500 whitespace-nowrap">{listDateDisplay(p)}</td>
                       <td className="hs-sticky-right py-2 px-3 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
                         {p.hidden ? (
                           <button
@@ -868,7 +885,7 @@ export default function ListTab() {
                     </tr>
                     {isOpen && (
                       <tr className="hs-detail-row">
-                        <td colSpan={16} className="px-3 pb-3 pt-1">
+                        <td colSpan={13} className="px-3 pb-3 pt-1">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <div className="text-xs font-semibold text-gray-500 mb-1">Full scope</div>
@@ -899,7 +916,10 @@ export default function ListTab() {
                         </td>
                       </tr>
                     )}
-                  </Fragment>
+                      </Fragment>
+                    );
+                  })}
+                </Fragment>
                 );
               })}
             </tbody>
@@ -910,17 +930,37 @@ export default function ListTab() {
       {/* Mobile (<768px): stacked cards, no horizontal scroll. Scrolls internally
           (flex-1 + min-h-0) within the height-constrained content column. */}
       {!loading && filtered.length > 0 && (
-        <div className="md:hidden flex-1 min-h-0 overflow-y-auto space-y-3">
-          {filtered.map((p) => (
-            <MobileCard
-              key={p.id}
-              p={p}
-              saving={savingId === p.id}
-              onPatch={patchProject}
-              onHide={hideProject}
-              onUnhide={unhideProject}
-            />
-          ))}
+        <div className="md:hidden flex-1 min-h-0 overflow-y-auto space-y-4">
+          {listSections.map((sec) => {
+            const sectionCollapsed = !!collapsedSections[sec.key];
+            return (
+            <div key={`m-${sec.key}`}>
+              <div
+                className="text-[11px] font-semibold text-gray-600 mb-2 cursor-pointer select-none"
+                onClick={() => toggleSection(sec.key)}
+              >
+                <span className="inline-block w-3 text-gray-400">{sectionCollapsed ? '▸' : '▾'}</span>
+                {sec.label} <span className="text-gray-400 font-normal">· {sec.rows.length}</span>
+              </div>
+              {sectionCollapsed ? null : sec.rows.length === 0 ? (
+                <div className="text-xs text-gray-400 italic">No jobs in this section.</div>
+              ) : (
+                <div className="space-y-3">
+                  {sec.rows.map((p) => (
+                    <MobileCard
+                      key={p.id}
+                      p={p}
+                      saving={savingId === p.id}
+                      onPatch={patchProject}
+                      onHide={hideProject}
+                      onUnhide={unhideProject}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+            );
+          })}
         </div>
       )}
     </div>
