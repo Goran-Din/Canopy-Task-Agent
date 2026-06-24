@@ -13,6 +13,7 @@ import { startNextcloudSync } from './workers/nextcloudSync';
 import { startAfternoonBriefing } from './workers/afternoonBriefing';
 import { startDepositPaymentSync } from './workers/depositPaymentSync';
 import { startReminderNudge } from './workers/reminderNudge';
+import { startClientDirectorySync } from './workers/clientDirectorySync';
 import { authMiddleware, loginRoute } from './dashboard/auth';
 import invoiceRoutes from './dashboard/invoiceRoutes';
 import commentRoutes from './dashboard/commentRoutes';
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
   startAfternoonBriefing(); // 6:00 PM CT — weather + crew briefing to group chat
   startDepositPaymentSync(); // hourly — check Xero for deposit payments
   startReminderNudge();      // 10:00 AM CT — follow-up reminder nudge to Goran + Marcin
+  startClientDirectorySync(); // 3:30 AM CT — SM8<->Xero client directory match (read-only)
   console.log('All workers started');
 
   const app = express();

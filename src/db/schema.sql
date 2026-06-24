@@ -309,3 +309,41 @@ CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
 CREATE INDEX IF NOT EXISTS idx_kb_search ON knowledge_base
   USING gin (to_tsvector('english', (title || ' ') || content));
 CREATE INDEX IF NOT EXISTS idx_kb_tags ON knowledge_base USING gin (tags);
+
+-- ---------------------------------------------------------------------------
+-- Client directory (Phase A): synced SM8 <-> Xero client match table. Built by
+-- the clientDirectorySync worker — READ-ONLY against SM8/Xero, writes only here.
+-- One row per directory_key: 'sm8:<company_uuid>' for an SM8 company (the spine)
+-- or 'xero:<contact_id>' for a Xero contact with no SM8 match. Upserted on
+-- directory_key so the worker is fully re-runnable. The future Clients tab reads
+-- this table; matching uses unique, non-denylisted email/phone (never a shared id).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS client_directory (
+  id                 SERIAL PRIMARY KEY,
+  directory_key      TEXT NOT NULL,                 -- 'sm8:<uuid>' | 'xero:<contactid>'
+  canonical_name     TEXT,
+  sm8_company_name   TEXT,
+  xero_contact_name  TEXT,
+  sm8_company_uuids  TEXT[] DEFAULT '{}'::text[],   -- >1 when SM8-side duplicated
+  xero_contact_ids   TEXT[] DEFAULT '{}'::text[],   -- >1 when matched/duplicated in Xero
+  match_email        TEXT,                          -- the usable unique email actually used
+  match_phone        TEXT,                          -- the usable unique phone actually used
+  match_signal       TEXT NOT NULL DEFAULT 'none',  -- email | phone | name | none
+  match_confidence   TEXT NOT NULL DEFAULT 'none',  -- high | medium | none
+  in_sm8             BOOLEAN NOT NULL DEFAULT false,
+  in_xero            BOOLEAN NOT NULL DEFAULT false,
+  dup_in_sm8         BOOLEAN NOT NULL DEFAULT false,
+  dup_in_xero        BOOLEAN NOT NULL DEFAULT false,
+  missing_from_xero  BOOLEAN NOT NULL DEFAULT false, -- in SM8, no Xero match
+  missing_from_sm8   BOOLEAN NOT NULL DEFAULT false, -- in Xero, no SM8 match
+  has_accepted_quote BOOLEAN NOT NULL DEFAULT false,
+  accepted_categories TEXT[] DEFAULT '{}'::text[],   -- distinct category names of WON jobs
+  created_by_rep      TEXT,                          -- SM8 staff who created the company's jobs
+  created_by_rep_uuid TEXT,
+  last_synced        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_client_directory_key ON client_directory(directory_key);
+CREATE INDEX IF NOT EXISTS idx_client_directory_missing_xero ON client_directory(missing_from_xero);
+CREATE INDEX IF NOT EXISTS idx_client_directory_rep ON client_directory(created_by_rep);
+CREATE INDEX IF NOT EXISTS idx_client_directory_accepted ON client_directory(has_accepted_quote);
