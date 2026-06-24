@@ -4,6 +4,7 @@ import PipelineTab from './components/PipelineTab';
 import CrewCalendar from './components/CrewCalendar';
 import CompletedTab from './components/CompletedTab';
 import ArchiveTab from './components/ArchiveTab';
+import ClientsTab from './components/ClientsTab';
 
 const TABS = [
   { key: 'list', label: 'List' },
@@ -11,6 +12,7 @@ const TABS = [
   { key: 'calendar', label: 'Crew Calendar' },
   { key: 'completed', label: 'Completed' },
   { key: 'archive', label: 'Archive' },
+  { key: 'clients', label: 'Clients' },
 ];
 
 export default function HardscapeApp() {
@@ -161,6 +163,7 @@ export default function HardscapeApp() {
         {tab === 'calendar' && <CrewCalendar />}
         {tab === 'completed' && <CompletedTab />}
         {tab === 'archive' && <ArchiveTab />}
+        {tab === 'clients' && <ClientsTab />}
       </div>
     </div>
   );

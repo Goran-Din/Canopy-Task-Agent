@@ -4,6 +4,7 @@ import logger from '../logger';
 import { ProspectStage } from '../types';
 import { runHardscapeSync, isHardscapeSyncRunning } from '../workers/hardscapeSync';
 import { runInvoiceSyncNow, isInvoiceSyncRunning } from '../workers/invoiceSync';
+import { runClientDirectorySync, isClientDirectorySyncRunning } from '../workers/clientDirectorySync';
 import { getConfigValue } from '../db/queries';
 
 const router = Router();
@@ -232,6 +233,64 @@ router.get('/dashboard/sync-xero-status', async (_req: Request, res: Response) =
     res.json({ running: isInvoiceSyncRunning(), last_sync: lastSync });
   } catch (err) {
     logger.error({ event: 'dashboard_sync_xero_status_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Clients tab (Phase B) — serves the synced client_directory and the on-demand
+// directory-sync trigger. READ-ONLY: GET returns the already-synced rows; POST
+// runs the same read-only worker the daily cron runs (behind its lock).
+// ---------------------------------------------------------------------------
+
+// GET /dashboard/clients — every directory row (≈1,350; the UI splits/filters).
+router.get('/dashboard/clients', async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `SELECT directory_key, canonical_name, sm8_company_name, xero_contact_name,
+              sm8_company_uuids, xero_contact_ids, match_email, match_phone,
+              match_signal, match_confidence, in_sm8, in_xero,
+              dup_in_sm8, dup_in_xero, dup_confidence, dup_reason,
+              sm8_dup_group_key, xero_dup_group_key,
+              missing_from_xero, missing_from_sm8, has_accepted_quote,
+              accepted_categories, created_by_rep, last_synced
+         FROM client_directory
+        ORDER BY LOWER(COALESCE(canonical_name, '')) ASC`
+    );
+    res.json({ clients: result.rows });
+  } catch (err) {
+    logger.error({ event: 'dashboard_clients_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /dashboard/sync-clients — run the read-only SM8<->Xero directory sync now,
+// behind its single-instance lock (mirrors /dashboard/sync).
+router.post('/dashboard/sync-clients', async (_req: Request, res: Response) => {
+  try {
+    const result = await runClientDirectorySync();
+    if ('alreadyRunning' in result) {
+      res.status(409).json({ status: 'already_running', message: 'A client sync is already running.' });
+      return;
+    }
+    res.json({ status: 'ok', summary: result });
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_clients_error', error: err instanceof Error ? err.message : String(err) });
+    res.status(500).json({ status: 'error', error: 'Client sync failed' });
+  }
+});
+
+// GET /dashboard/sync-clients-status — last directory-sync result + running flag.
+router.get('/dashboard/sync-clients-status', async (_req: Request, res: Response) => {
+  try {
+    const raw = await getConfigValue('client_directory_last_sync');
+    let lastSync: unknown = null;
+    if (raw) {
+      try { lastSync = JSON.parse(raw); } catch { lastSync = null; }
+    }
+    res.json({ running: isClientDirectorySyncRunning(), last_sync: lastSync });
+  } catch (err) {
+    logger.error({ event: 'dashboard_sync_clients_status_error', error: err instanceof Error ? err.message : String(err) });
     res.status(500).json({ error: 'Internal server error' });
   }
 });

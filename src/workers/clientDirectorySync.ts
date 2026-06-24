@@ -32,8 +32,19 @@ const DENY_EMAILS = new Set([
   'office@sunsetservices.us',
   'office@aimrg.com',
   'sunsetlandscaping123@gmail.com',
+  'office@sunsetservice.us',        // typo variant of the internal office address
+  'erick@sunsetlawnservice.com',    // internal staff address (appears on many records)
 ]);
 const DENY_PHONES = new Set(['6306181253']);
+
+// Duplicate-cluster band: an identifier shared by 2..DUP_BAND_MAX records is a real
+// duplicate signal; larger clusters are shared business/internal ids (PMI, Napleton,
+// CIRA, internal staff) — pollution, not duplicates. Chosen from the share-count
+// distribution where business/internal ids begin at size 5. Names also require a
+// minimum length to drop test-data junk like "sd"/"ddd".
+const DUP_BAND_MAX = 4;
+const DUP_NAME_MIN_LEN = 5;
+const inDupBand = (size: number) => size >= 2 && size <= DUP_BAND_MAX;
 
 // ---- normalizers ----
 const normEmail = (e?: string) => (e || '').toLowerCase().trim();
@@ -48,6 +59,10 @@ export interface ClientDirectorySummary {
   missingFromXero: number;
   missingFromSm8: number;
   withAcceptedQuote: number;
+  dupInSm8: number;
+  dupInXero: number;
+  dupStrong: number;
+  dupPossible: number;
   ranAt: string;
 }
 
@@ -132,7 +147,6 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
     const n = normName(c.Name);
     if (n) { const arr = xeroByName.get(n) || xeroByName.set(n, []).get(n)!; if (!arr.includes(c.ContactID)) arr.push(c.ContactID); }
   }
-  const xeroDupNames = new Set([...xeroByName.entries()].filter(([, ids]) => ids.length > 1).map(([n]) => n));
   const emailUsable = (e: string) => !!e && !DENY_EMAILS.has(e) && xeroByEmail.get(e)?.size === 1;
   const phoneUsable = (p: string) => !!p && !DENY_PHONES.has(p) && xeroByPhone.get(p)?.size === 1;
 
@@ -160,6 +174,65 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
     (jobsByCompany.get(j.company_uuid) || jobsByCompany.set(j.company_uuid, []).get(j.company_uuid)!).push(j);
   }
 
+  // ---- Duplicate-cluster detection (banded, denylist-excluded) ----
+  // strong = shares a usable email/phone with 1..(N-1) other records (same client
+  // recorded twice); possible = shares an exact name only (could be coincidence).
+  interface DupInfo { confidence: 'strong' | 'possible'; key: string; reason: string; }
+
+  // Cross-side pollution guard: an identifier shared by >N records on EITHER system
+  // is a shared business/internal id (e.g. a property-management AP email), never a
+  // duplicate-client signal — exclude it on both sides regardless of its count on the
+  // side being evaluated.
+  const emailPolluted = (e: string) => (xeroByEmail.get(e)?.size || 0) > DUP_BAND_MAX || (sm8EmailToCos.get(e)?.size || 0) > DUP_BAND_MAX;
+  const phonePolluted = (p: string) => (xeroByPhone.get(p)?.size || 0) > DUP_BAND_MAX || (sm8PhoneToCos.get(p)?.size || 0) > DUP_BAND_MAX;
+
+  const xeroDupInfo = (c: XeroContact): DupInfo | null => {
+    const e = normEmail(c.EmailAddress);
+    if (e && !DENY_EMAILS.has(e) && inDupBand(xeroByEmail.get(e)?.size || 0) && !emailPolluted(e)) {
+      const s = xeroByEmail.get(e)!.size;
+      return { confidence: 'strong', key: `xemail:${e}`, reason: `Xero: shares email ${e} with ${s - 1} other contact(s)` };
+    }
+    for (const p of xeroPhones(c)) {
+      if (!DENY_PHONES.has(p) && inDupBand(xeroByPhone.get(p)?.size || 0) && !phonePolluted(p)) {
+        const s = xeroByPhone.get(p)!.size;
+        return { confidence: 'strong', key: `xphone:${p}`, reason: `Xero: shares phone ${p} with ${s - 1} other contact(s)` };
+      }
+    }
+    const n = normName(c.Name);
+    if (n.length >= DUP_NAME_MIN_LEN && inDupBand((xeroByName.get(n) || []).length)) {
+      const s = (xeroByName.get(n) || []).length;
+      return { confidence: 'possible', key: `xname:${n}`, reason: `Xero: shares name "${c.Name}" with ${s - 1} other contact(s)` };
+    }
+    return null;
+  };
+
+  const sm8DupInfo = (co: SM8Company, emails: Set<string>, phones: Set<string>): DupInfo | null => {
+    for (const e of emails) {
+      if (inDupBand(sm8EmailToCos.get(e)?.size || 0) && !emailPolluted(e)) {
+        const s = sm8EmailToCos.get(e)!.size;
+        return { confidence: 'strong', key: `semail:${e}`, reason: `SM8: shares email ${e} with ${s - 1} other client(s)` };
+      }
+    }
+    for (const p of phones) {
+      if (inDupBand(sm8PhoneToCos.get(p)?.size || 0) && !phonePolluted(p)) {
+        const s = sm8PhoneToCos.get(p)!.size;
+        return { confidence: 'strong', key: `sphone:${p}`, reason: `SM8: shares phone ${p} with ${s - 1} other client(s)` };
+      }
+    }
+    const n = normName(co.name);
+    if (n.length >= DUP_NAME_MIN_LEN && inDupBand(sm8NameToCos.get(n)?.size || 0)) {
+      const s = sm8NameToCos.get(n)!.size;
+      return { confidence: 'possible', key: `sname:${n}`, reason: `SM8: shares name "${co.name}" with ${s - 1} other client(s)` };
+    }
+    return null;
+  };
+
+  const strongest = (a: DupInfo | null, b: DupInfo | null): 'strong' | 'possible' | null => {
+    const rank = (d: DupInfo | null) => (d?.confidence === 'strong' ? 2 : d?.confidence === 'possible' ? 1 : 0);
+    const r = Math.max(rank(a), rank(b));
+    return r === 2 ? 'strong' : r === 1 ? 'possible' : null;
+  };
+
   // ---- 4. Build rows (SM8 companies are the spine) ----
   const rows: any[] = [];
   const coveredXeroIds = new Set<string>();
@@ -186,12 +259,12 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
       xeroName = xeroById.get(matchedIds[0])?.Name || null;
     }
 
-    const dupInSm8 =
-      [...g.emails].some((e) => (sm8EmailToCos.get(e)?.size || 0) > 1) ||
-      [...g.phones].some((p) => (sm8PhoneToCos.get(p)?.size || 0) > 1) ||
-      (sm8NameToCos.get(nm)?.size || 0) > 1;
-
-    const dupInXero = matched && (matchedIds.length > 1 || xeroDupNames.has(normName(xeroName || undefined)));
+    const sm8Dup = sm8DupInfo(co, g.emails, g.phones);
+    const xeroDup = matched ? xeroDupInfo(xeroById.get(matchedIds[0])!) : null;
+    const dupInSm8 = !!sm8Dup;
+    const dupInXero = !!xeroDup;
+    const dupConfidence = strongest(sm8Dup, xeroDup);
+    const dupReason = [sm8Dup?.reason, xeroDup?.reason].filter(Boolean).join(' ; ') || null;
 
     const coJobs = jobsByCompany.get(co.uuid) || [];
     const wonJobs = coJobs.filter((j) => ACCEPTED_STATUSES.has(j.status || ''));
@@ -219,6 +292,10 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
       in_xero: matched,
       dup_in_sm8: dupInSm8,
       dup_in_xero: dupInXero,
+      dup_confidence: dupConfidence,
+      dup_reason: dupReason,
+      sm8_dup_group_key: sm8Dup?.key || null,
+      xero_dup_group_key: xeroDup?.key || null,
       missing_from_xero: !matched,
       missing_from_sm8: false,
       has_accepted_quote: wonJobs.length > 0,
@@ -231,10 +308,7 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
   // ---- 5. Xero contacts with no SM8 match -> in_xero-only rows ----
   for (const c of xeroContacts) {
     if (c.ContactStatus === 'ARCHIVED' || coveredXeroIds.has(c.ContactID)) continue;
-    const nm = normName(c.Name);
-    const e = normEmail(c.EmailAddress);
-    const sharedEmail = !!e && (xeroByEmail.get(e)?.size || 0) > 1;
-    const sharedPhone = xeroPhones(c).some((p) => (xeroByPhone.get(p)?.size || 0) > 1);
+    const xeroDup = xeroDupInfo(c);
     rows.push({
       directory_key: `xero:${c.ContactID}`,
       canonical_name: c.Name || '(unnamed)',
@@ -249,7 +323,11 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
       in_sm8: false,
       in_xero: true,
       dup_in_sm8: false,
-      dup_in_xero: xeroDupNames.has(nm) || sharedEmail || sharedPhone,
+      dup_in_xero: !!xeroDup,
+      dup_confidence: xeroDup?.confidence || null,
+      dup_reason: xeroDup?.reason || null,
+      sm8_dup_group_key: null,
+      xero_dup_group_key: xeroDup?.key || null,
       missing_from_xero: false,
       missing_from_sm8: true,
       has_accepted_quote: false,
@@ -267,8 +345,9 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
           sm8_company_uuids, xero_contact_ids, match_email, match_phone,
           match_signal, match_confidence, in_sm8, in_xero, dup_in_sm8, dup_in_xero,
           missing_from_xero, missing_from_sm8, has_accepted_quote, accepted_categories,
-          created_by_rep, created_by_rep_uuid, last_synced)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, NOW())
+          created_by_rep, created_by_rep_uuid,
+          dup_confidence, dup_reason, sm8_dup_group_key, xero_dup_group_key, last_synced)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24, NOW())
        ON CONFLICT (directory_key) DO UPDATE SET
           canonical_name=EXCLUDED.canonical_name, sm8_company_name=EXCLUDED.sm8_company_name,
           xero_contact_name=EXCLUDED.xero_contact_name, sm8_company_uuids=EXCLUDED.sm8_company_uuids,
@@ -279,6 +358,8 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
           missing_from_xero=EXCLUDED.missing_from_xero, missing_from_sm8=EXCLUDED.missing_from_sm8,
           has_accepted_quote=EXCLUDED.has_accepted_quote, accepted_categories=EXCLUDED.accepted_categories,
           created_by_rep=EXCLUDED.created_by_rep, created_by_rep_uuid=EXCLUDED.created_by_rep_uuid,
+          dup_confidence=EXCLUDED.dup_confidence, dup_reason=EXCLUDED.dup_reason,
+          sm8_dup_group_key=EXCLUDED.sm8_dup_group_key, xero_dup_group_key=EXCLUDED.xero_dup_group_key,
           last_synced=NOW()`,
       [
         r.directory_key, r.canonical_name, r.sm8_company_name, r.xero_contact_name,
@@ -286,6 +367,7 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
         r.match_signal, r.match_confidence, r.in_sm8, r.in_xero, r.dup_in_sm8, r.dup_in_xero,
         r.missing_from_xero, r.missing_from_sm8, r.has_accepted_quote, r.accepted_categories,
         r.created_by_rep, r.created_by_rep_uuid,
+        r.dup_confidence, r.dup_reason, r.sm8_dup_group_key, r.xero_dup_group_key,
       ]
     );
   }
@@ -298,6 +380,10 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
     missingFromXero: rows.filter((r) => r.missing_from_xero).length,
     missingFromSm8: rows.filter((r) => r.missing_from_sm8).length,
     withAcceptedQuote: rows.filter((r) => r.has_accepted_quote).length,
+    dupInSm8: rows.filter((r) => r.dup_in_sm8).length,
+    dupInXero: rows.filter((r) => r.dup_in_xero).length,
+    dupStrong: rows.filter((r) => r.dup_confidence === 'strong').length,
+    dupPossible: rows.filter((r) => r.dup_confidence === 'possible').length,
     ranAt: new Date().toISOString(),
   };
 

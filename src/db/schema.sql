@@ -343,7 +343,18 @@ CREATE TABLE IF NOT EXISTS client_directory (
   last_synced        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Phase A.1: evidence-based duplicate detection. dup_confidence = strong (shared
+-- email/phone in a banded cluster, size 2..N) | possible (shared exact name only).
+-- The *_dup_group_key columns let the future Duplicates tab cluster rows: every row
+-- sharing a normalized identifier carries the same key.
+ALTER TABLE client_directory ADD COLUMN IF NOT EXISTS dup_confidence     TEXT;
+ALTER TABLE client_directory ADD COLUMN IF NOT EXISTS dup_reason         TEXT;
+ALTER TABLE client_directory ADD COLUMN IF NOT EXISTS sm8_dup_group_key  TEXT;
+ALTER TABLE client_directory ADD COLUMN IF NOT EXISTS xero_dup_group_key TEXT;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_client_directory_key ON client_directory(directory_key);
 CREATE INDEX IF NOT EXISTS idx_client_directory_missing_xero ON client_directory(missing_from_xero);
 CREATE INDEX IF NOT EXISTS idx_client_directory_rep ON client_directory(created_by_rep);
 CREATE INDEX IF NOT EXISTS idx_client_directory_accepted ON client_directory(has_accepted_quote);
+CREATE INDEX IF NOT EXISTS idx_client_directory_sm8_dupkey  ON client_directory(sm8_dup_group_key);
+CREATE INDEX IF NOT EXISTS idx_client_directory_xero_dupkey ON client_directory(xero_dup_group_key);

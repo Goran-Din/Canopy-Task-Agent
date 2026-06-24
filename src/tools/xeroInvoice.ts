@@ -20,10 +20,13 @@ const sm8Api = axios.create({
 interface SM8JobMaterial {
   uuid: string;
   job_uuid: string;
-  name: string;
-  description: string;
-  quantity: number;
-  unit_cost: number;
+  // SM8 jobmaterial: description lives in `name`, sell amount in `price`, count in
+  // `quantity`. (`unit_cost`/`description` are null in practice — kept as fallbacks.)
+  name?: string;
+  description?: string;
+  quantity?: number | string;
+  price?: number | string;
+  unit_cost?: number | string;
 }
 
 interface CreateXeroInvoiceInput {
@@ -47,28 +50,39 @@ export async function handleCreateXeroInvoice(
   input: CreateXeroInvoiceInput
 ): Promise<CreateXeroInvoiceResult> {
   try {
-    // Step 1 — Resolve job UUID (accept job number or UUID)
-    let jobUuid = input.job_uuid;
+    // Step 1 — Resolve the REAL job (accept job number or UUID). Never re-fetch via
+    // /job.json?uuid= : SM8 ignores that query filter and returns the whole list, so
+    // [0] would be the demo "Help Guide Job". Use the path endpoint for a UUID, and
+    // an in-code generated_job_id match for a job number.
+    const identifier = String(input.job_uuid).trim();
+    let job: {
+      uuid: string;
+      company_uuid?: string;
+      generated_job_id?: string;
+      job_description?: string;
+      total_invoice_amount?: string | number;
+    } | undefined;
 
-    if (!isUuid(jobUuid)) {
-      // Looks like a job number — search SM8 for it
-      const searchRes = await sm8Api.get('/job.json');
-      const allJobs: Array<{ uuid: string; generated_job_id?: string }> = searchRes.data || [];
-      const match = allJobs.find((j) => j.generated_job_id === jobUuid);
-      if (!match) {
-        return { status: 'error', message: `No ServiceM8 job found with number #${jobUuid}.` };
+    if (isUuid(identifier)) {
+      try {
+        const jobRes = await sm8Api.get(`/job/${identifier}.json`);
+        job = Array.isArray(jobRes.data) ? jobRes.data[0] : jobRes.data;
+      } catch {
+        job = undefined;
       }
-      jobUuid = match.uuid;
-      logger.info({ event: 'xero_invoice_resolved_job', inputNumber: input.job_uuid, resolvedUuid: jobUuid });
+    } else {
+      const searchRes = await sm8Api.get('/job.json');
+      const allJobs = searchRes.data || [];
+      job = allJobs.find(
+        (j: { generated_job_id?: string }) => String(j.generated_job_id ?? '').trim() === identifier
+      );
     }
 
-    const jobRes = await sm8Api.get('/job.json', {
-      params: { uuid: jobUuid },
-    });
-    const job = jobRes.data?.[0];
-    if (!job) {
-      return { status: 'error', message: `No ServiceM8 job found for UUID ${jobUuid}.` };
+    if (!job || !job.uuid) {
+      return { status: 'error', message: `No ServiceM8 job found for "${input.job_uuid}".` };
     }
+    const jobUuid = job.uuid;
+    logger.info({ event: 'xero_invoice_resolved_job', input: input.job_uuid, resolvedUuid: jobUuid });
 
     // Get client name from SM8 company
     let clientName = 'Unknown Client';
@@ -139,15 +153,42 @@ export async function handleCreateXeroInvoice(
       };
     }
 
-    // Step 4 — Build Xero invoice
-    const lineItems = materials.map((m) => ({
-      Description: m.description || m.name,
-      Quantity: m.quantity,
-      UnitAmount: m.unit_cost,
-      AccountCode: '200',
-    }));
+    // Step 4 — Build Xero invoice. SM8 stores the line description in `name` and the
+    // sell amount in `price` (qty usually 1); quantity*unit_cost would compute $0.
+    const lineItems = materials.map((m) => {
+      const price = parseFloat(String(m.price ?? m.unit_cost ?? 0));
+      const qty = parseFloat(String(m.quantity ?? 0));
+      const effectiveQty = qty > 0 ? qty : 1;
+      return {
+        Description: m.name || m.description || 'Line item',
+        Quantity: effectiveQty,
+        UnitAmount: price,
+        AccountCode: '200',
+      };
+    });
 
-    const total = materials.reduce((sum, m) => sum + m.quantity * m.unit_cost, 0);
+    const total = lineItems.reduce((sum, li) => sum + li.Quantity * li.UnitAmount, 0);
+
+    // Sanity guard — never POST a $0 or non-reconciling invoice (it would bill the
+    // customer the wrong amount). The authoritative job total is total_invoice_amount.
+    const jobTotal = parseFloat(String(job.total_invoice_amount || 0));
+    if (total <= 0) {
+      logger.error({ event: 'xero_invoice_zero_total_blocked', jobNumber, total, jobTotal });
+      return {
+        status: 'error',
+        message: `Refusing to create invoice for job #${jobNumber}: the computed line total is $0.00. Check the quote pricing in ServiceM8 before invoicing.`,
+      };
+    }
+    if (jobTotal > 0) {
+      const tolerance = Math.max(1, jobTotal * 0.01);
+      if (Math.abs(total - jobTotal) > tolerance) {
+        logger.error({ event: 'xero_invoice_total_mismatch_blocked', jobNumber, total, jobTotal });
+        return {
+          status: 'error',
+          message: `Refusing to create invoice for job #${jobNumber}: computed line total $${total.toFixed(2)} does not reconcile with the ServiceM8 job total $${jobTotal.toFixed(2)}. Please review the quote before invoicing.`,
+        };
+      }
+    }
 
     const tenantId = await getConfigValue('xero_tenant_id');
     if (!tenantId) throw new Error('Xero tenant ID not configured.');
