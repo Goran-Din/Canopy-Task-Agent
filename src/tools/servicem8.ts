@@ -21,20 +21,58 @@ export async function getJobStatus(input: GetJobStatusInput): Promise<{
 }> {
   try {
     if (input.sm8_job_id) {
-      const jobRes = await sm8Api.get(`/job.json?uuid=${input.sm8_job_id}`);
-      const jobs = jobRes.data;
-      if (!jobs || jobs.length === 0) {
-        return { jobs: [], ambiguous: false, message: 'No job found with that ID.' };
+      const identifier = String(input.sm8_job_id).trim();
+      let job: {
+        company_uuid?: string;
+        uuid?: string;
+        generated_job_id?: string;
+        status?: string;
+        job_description?: string;
+        date?: string;
+      } | undefined;
+
+      if (identifier.includes('-')) {
+        // Looks like a ServiceM8 UUID. SM8 ignores ?uuid= query filters on /job.json
+        // (it returns the whole list), so fetch the single record via the path endpoint.
+        try {
+          const jobRes = await sm8Api.get(`/job/${identifier}.json`);
+          const data = jobRes.data;
+          job = Array.isArray(data) ? data[0] : data;
+        } catch {
+          job = undefined;
+        }
+      } else {
+        // Human job number — fetch all jobs and exact-match generated_job_id in code,
+        // the same approach getJobAddress / getJobQuoteDetails / updateJobStatus use.
+        const allJobsRes = await sm8Api.get('/job.json');
+        const allJobs = allJobsRes.data || [];
+        job = allJobs.find((j: { generated_job_id?: string }) =>
+          String(j.generated_job_id ?? '').trim() === identifier
+        );
       }
-      const job = jobs[0];
-      const clientRes = await sm8Api.get(`/company.json?uuid=${job.company_uuid}`);
-      const client = clientRes.data[0];
+
+      // No fallback to jobs[0] / sample record. If nothing matched, say so.
+      if (!job || !job.uuid) {
+        return { jobs: [], ambiguous: false, message: `No job found for "${identifier}". Please double-check the job number and try again.` };
+      }
+
+      // Resolve the client via the path endpoint too — ?uuid= on /company.json is also ignored.
+      let clientName = 'Unknown';
+      if (job.company_uuid) {
+        try {
+          const clientRes = await sm8Api.get(`/company/${job.company_uuid}.json`);
+          const cData = clientRes.data;
+          const client = Array.isArray(cData) ? cData[0] : cData;
+          if (client?.name) clientName = client.name;
+        } catch { /* keep Unknown */ }
+      }
+
       const result: JobStatus = {
-        client_uuid: job.company_uuid,
-        client_name: client?.name || 'Unknown',
+        client_uuid: job.company_uuid || '',
+        client_name: clientName,
         job_uuid: job.uuid,
         job_number: job.generated_job_id || job.uuid,
-        status: job.status,
+        status: job.status || '',
         description: job.job_description || '',
         created_date: job.date || '',
       };
@@ -75,10 +113,11 @@ export async function getJobStatus(input: GetJobStatusInput): Promise<{
       ? clients.find((c: { uuid: string }) => c.uuid === cached.sm8_uuid) || clients[0]
       : clients[0];
 
-    const jobsRes = await sm8Api.get('/job.json', {
-      params: { company_uuid: client.uuid }
-    });
+    // SM8 ignores the ?company_uuid= query filter on /job.json (returns ALL jobs), so
+    // fetch the full list and filter to this client's jobs in code.
+    const jobsRes = await sm8Api.get('/job.json');
     const jobs = (jobsRes.data || [])
+      .filter((j: { company_uuid?: string }) => j.company_uuid === client.uuid)
       .sort((a: { date?: string }, b: { date?: string }) =>
         (b.date || '').localeCompare(a.date || '')
       )
