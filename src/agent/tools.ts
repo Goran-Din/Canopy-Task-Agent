@@ -173,22 +173,26 @@ export const toolDefinitions: Anthropic.Tool[] = [
   },
   {
     name: 'query_xero_invoices',
-    description: 'Read-only query of Xero accounting system. Use to answer questions about invoice payment status, outstanding invoices, client account balances, and overdue invoices. This tool NEVER creates, modifies, or deletes anything in Xero.',
+    description: 'Read-only query of Xero accounting system. Use to answer questions about invoice payment status, outstanding invoices, what a client owes, overdue invoices, and per-JOB billing (is a job invoiced / is its deposit paid). A job number is the same as a project, quote, or proposal number — treat "job #400", "quote #400", "proposal #400", "project #400" as the same identifier. This tool NEVER creates, modifies, or deletes anything in Xero.',
     input_schema: {
       type: 'object',
       properties: {
         query_type: {
           type: 'string',
-          enum: ['invoice_status', 'outstanding', 'client_balance', 'overdue'],
-          description: 'invoice_status: check if a specific invoice or client has paid. outstanding: list all unpaid invoices. client_balance: total amount owed by one client. overdue: invoices past their due date.',
+          enum: ['invoice_status', 'outstanding', 'client_balance', 'overdue', 'job_billing'],
+          description: 'invoice_status: list a specific invoice or all of one client\'s invoices and what they owe. outstanding: list all unpaid invoices company-wide. client_balance: what ONE client owes — returns TWO separate figures (unpaid on sent invoices, and completed/quoted work not yet invoiced). overdue: invoices past their due date. job_billing: for ONE job number — whether it has been invoiced, the invoice status/amount due, and whether its deposit invoice is paid.',
         },
         client_name: {
           type: 'string',
-          description: 'Client name as it appears in Xero/ServiceM8. Required for invoice_status (when no invoice_number given) and client_balance.',
+          description: 'Client name as it appears in Xero/ServiceM8. Required for client_balance and for invoice_status (when no invoice_number given).',
         },
         invoice_number: {
           type: 'string',
           description: 'Specific Xero invoice number e.g. INV-0234. Takes priority over client_name.',
+        },
+        job_number: {
+          type: 'string',
+          description: 'ServiceM8 job/quote/proposal number e.g. "400". Required for job_billing.',
         },
       },
       required: ['query_type'],

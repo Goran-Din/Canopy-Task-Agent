@@ -297,23 +297,38 @@ export async function getJobQuoteDetails(jobNumberOrUuid: string): Promise<{
       } catch { /* use default */ }
     }
 
-    // Fetch line items from jobmaterial endpoint
+    // Fetch line items from jobmaterial endpoint. SM8 ignores the ?job_uuid= query
+    // filter (returns ALL jobs' materials), so we MUST filter in code by job_uuid —
+    // the same approach handleCreateXeroInvoice uses.
     let lineItems: Array<{ description: string; unitAmount: number; quantity: number }> = [];
     try {
-      const matRes = await sm8Api.get('/jobmaterial.json', { params: { job_uuid: job.uuid } });
-      const materials = matRes.data || [];
-      lineItems = materials
-        .filter((m: { active: number }) => m.active === 1)
-        .map((m: { material_name?: string; unit_cost?: number; qty?: number }) => ({
-          description: m.material_name || 'Line item',
-          unitAmount: parseFloat(String(m.unit_cost || 0)),
-          quantity: parseFloat(String(m.qty || 1)),
-        }));
+      const matRes = await sm8Api.get('/jobmaterial.json');
+      const materials = (matRes.data || []).filter(
+        (m: { job_uuid?: string; active?: number }) => m.job_uuid === job.uuid && m.active === 1
+      );
+      // SM8 jobmaterial fields: description is `name`, the sell amount is `price`,
+      // and `quantity` is the count (often 1). (`unit_cost`/`material_name`/`qty`
+      // are kept as fallbacks for any legacy/variant payloads.)
+      lineItems = materials.map((m: {
+        name?: string; material_name?: string;
+        price?: string | number; unit_cost?: string | number;
+        quantity?: string | number; qty?: string | number;
+      }) => {
+        const price = parseFloat(String(m.price ?? m.unit_cost ?? 0));
+        const qty = parseFloat(String(m.quantity ?? m.qty ?? 0));
+        const amount = qty > 0 ? price * qty : price;
+        return { description: m.name || m.material_name || 'Line item', unitAmount: amount, quantity: qty };
+      });
     } catch {
       logger.warn({ event: 'jobmaterial_fetch_failed', job_uuid: job.uuid });
     }
 
-    const totalAmount = lineItems.reduce((sum, li) => sum + li.unitAmount * li.quantity, 0);
+    // Authoritative quoted total is the SM8 job field, NOT a sum of qty×unit_cost
+    // (which is 0 for hardscape quotes). Fall back to the line-item sum only if the
+    // job total is missing/zero.
+    const jobTotal = parseFloat(String(job.total_invoice_amount || 0));
+    const lineSum = lineItems.reduce((sum, li) => sum + li.unitAmount, 0);
+    const totalAmount = jobTotal > 0 ? jobTotal : lineSum;
 
     // Determine project type from description
     const descLower = (job.job_description || '').toLowerCase();
@@ -336,6 +351,96 @@ export async function getJobQuoteDetails(jobNumberOrUuid: string): Promise<{
     logger.error({ event: 'get_job_quote_details_error', error: error.message });
     return null;
   }
+}
+
+/**
+ * Resolve a single SM8 job by its human job number (exact, trimmed match on
+ * generated_job_id) and return the fields needed for billing lookups. Returns
+ * null when nothing matches — never a default/first record.
+ */
+export async function getJobByNumber(jobNumber: string): Promise<{
+  uuid: string;
+  jobNumber: string;
+  companyUuid: string;
+  clientName: string;
+  total: number;
+  status: string;
+} | null> {
+  const identifier = String(jobNumber).trim();
+  const allJobsRes = await sm8Api.get('/job.json');
+  const job = (allJobsRes.data || []).find(
+    (j: { generated_job_id?: string }) => String(j.generated_job_id ?? '').trim() === identifier
+  );
+  if (!job) return null;
+
+  let clientName = 'Unknown Client';
+  if (job.company_uuid) {
+    try {
+      const clientRes = await sm8Api.get(`/company/${job.company_uuid}.json`);
+      const c = Array.isArray(clientRes.data) ? clientRes.data[0] : clientRes.data;
+      if (c?.name) clientName = c.name;
+    } catch { /* keep default */ }
+  }
+
+  return {
+    uuid: job.uuid,
+    jobNumber: job.generated_job_id || job.uuid,
+    companyUuid: job.company_uuid || '',
+    clientName,
+    total: parseFloat(String(job.total_invoice_amount || 0)),
+    status: job.status || '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Client jobs with totals — used by the per-client "owes" calculation to find
+// completed/quoted work that may not be fully invoiced yet.
+// ---------------------------------------------------------------------------
+
+export interface ClientJobsResult {
+  status: 'ok' | 'none' | 'ambiguous';
+  companyName?: string;
+  companyUuid?: string;
+  candidates?: string[];
+  jobs: Array<{ jobNumber: string; uuid: string; total: number; status: string }>;
+}
+
+/**
+ * Resolve an SM8 client by name (in-code substring match — the ?name= filter is
+ * ignored) and return its jobs that carry a quoted/work total. Returns
+ * status 'ambiguous' (with candidate names) when more than one distinct company
+ * matches, so the caller can ask which one rather than guess.
+ */
+export async function getClientJobsForBilling(clientName: string): Promise<ClientJobsResult> {
+  const term = clientName.trim().toLowerCase();
+  if (!term) return { status: 'none', jobs: [] };
+
+  const allClientsRes = await sm8Api.get('/company.json');
+  const allClients = allClientsRes.data || [];
+  const matches = allClients.filter(
+    (c: { name?: string }) => c.name && c.name.toLowerCase().includes(term)
+  );
+  if (matches.length === 0) return { status: 'none', jobs: [] };
+
+  // Collapse to distinct companies; if several truly different ones match, ask.
+  const distinct = Array.from(new Map(matches.map((c: { uuid: string; name: string }) => [c.uuid, c])).values()) as Array<{ uuid: string; name: string }>;
+  if (distinct.length > 1) {
+    return { status: 'ambiguous', candidates: distinct.slice(0, 8).map((c) => c.name), jobs: [] };
+  }
+
+  const company = distinct[0];
+  const allJobsRes = await sm8Api.get('/job.json');
+  const jobs = (allJobsRes.data || [])
+    .filter((j: { company_uuid?: string }) => j.company_uuid === company.uuid)
+    .map((j: { generated_job_id?: string; uuid: string; total_invoice_amount?: string; status?: string }) => ({
+      jobNumber: j.generated_job_id || j.uuid,
+      uuid: j.uuid,
+      total: parseFloat(String(j.total_invoice_amount || 0)),
+      status: j.status || '',
+    }))
+    .filter((j: { total: number }) => j.total > 0);
+
+  return { status: 'ok', companyName: company.name, companyUuid: company.uuid, jobs };
 }
 
 export async function getXeroContactForSM8Job(

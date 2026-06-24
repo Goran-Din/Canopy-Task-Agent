@@ -67,9 +67,10 @@ export interface CreateJobInput {
 }
 
 export interface XeroQueryInput {
-  query_type: 'invoice_status' | 'outstanding' | 'client_balance' | 'overdue';
+  query_type: 'invoice_status' | 'outstanding' | 'client_balance' | 'overdue' | 'job_billing';
   client_name?: string;
   invoice_number?: string;
+  job_number?: string;
 }
 
 export interface InvoiceBadge {
