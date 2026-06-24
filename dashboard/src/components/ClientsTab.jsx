@@ -28,6 +28,8 @@ const SUB_TABS = [
   { key: 'all', label: 'All Clients' },
   { key: 'accepted', label: 'Accepted Quotes' },
   { key: 'duplicates', label: 'Duplicates' },
+  { key: 'missing_xero', label: 'Missing from Xero' },
+  { key: 'missing_sm8', label: 'Missing from SM8' },
 ];
 
 function Chip({ children, bg, text, title }) {
@@ -62,16 +64,80 @@ function describeGroupKey(key) {
   return `${label}: ${val}`;
 }
 
+// ── CSV export helpers (plain JS, no dependency) ──────────────────────────
+// Today as YYYY-MM-DD in America/Chicago (matches the dashboard's tz convention).
+function todayStr() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+// Escape one CSV cell: quote if it contains comma/quote/newline; double inner quotes.
+function csvCell(v) {
+  if (v == null) return '';
+  let s = Array.isArray(v) ? v.join('; ') : String(v);
+  if (typeof v === 'boolean') s = v ? 'Y' : 'N';
+  if (/[",\n\r]/.test(s)) s = `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+// Build + download a CSV. headers: string[]; rows: array of arrays (raw values).
+// Prepends a UTF-8 BOM so Excel reads accents correctly.
+function downloadCSV(filename, headers, rows) {
+  const lines = [headers.map(csvCell).join(',')];
+  for (const r of rows) lines.push(r.map(csvCell).join(','));
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Standard client-row columns (All / Accepted / Missing views).
+const CLIENT_HEADERS = [
+  'Name', 'SM8 name', 'Xero name', 'In SM8', 'In Xero', 'Accepted', 'Categories',
+  'Email', 'Phone', 'Rep', 'Missing from Xero', 'Missing from SM8', 'Duplicate',
+];
+const clientRow = (c) => [
+  c.canonical_name || '', c.sm8_company_name || '', c.xero_contact_name || '',
+  !!c.in_sm8, !!c.in_xero, !!c.has_accepted_quote, c.accepted_categories || [],
+  c.match_email || '', c.match_phone || '', c.created_by_rep || '',
+  !!c.missing_from_xero, !!c.missing_from_sm8,
+  (c.dup_in_sm8 || c.dup_in_xero) ? (c.dup_confidence || 'yes') : 'none',
+];
+
+function ExportButton({ onClick, count, label = 'Export CSV' }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={!count}
+      title={count ? `Download ${count} row(s) as CSV` : 'Nothing to export'}
+      className="px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      ⤓ {label}
+    </button>
+  );
+}
+
 // ── All Clients ───────────────────────────────────────────────────────────
 function AllClients({ rows, search }) {
   const [open, setOpen] = useState({});
   const list = useMemo(() => rows.filter((c) => matchesSearch(c, search)), [rows, search]);
 
+  const exportCsv = () => downloadCSV(`clients-all-${todayStr()}.csv`, CLIENT_HEADERS, list.map(clientRow));
+
   return (
     <div>
-      <div className="text-sm font-semibold text-gray-700 mb-2">
-        All clients
-        <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full ml-2">{list.length}</span>
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-gray-700">
+          All clients
+          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full ml-2">{list.length}</span>
+        </div>
+        <ExportButton onClick={exportCsv} count={list.length} />
       </div>
       {list.length === 0 && <div className="text-center text-gray-400 text-sm py-12">No clients match.</div>}
       {list.length > 0 && (
@@ -174,6 +240,10 @@ function AcceptedQuotes({ rows, search }) {
           >
             {copied ? '✓ Copied' : `Copy ${withEmail.length} emails`}
           </button>
+          <ExportButton
+            onClick={() => downloadCSV(`clients-accepted-${todayStr()}.csv`, CLIENT_HEADERS, list.map(clientRow))}
+            count={list.length}
+          />
         </div>
       </div>
       {list.length === 0 && <div className="text-center text-gray-400 text-sm py-12">No accepted clients match.</div>}
@@ -238,6 +308,23 @@ function Duplicates({ rows, search }) {
     });
   }, [inBucket, bucket]);
 
+  // CSV: one row per cluster member, preserving the cluster identifier + grouping.
+  const exportDupCsv = () => {
+    const headers = ['Cluster key', 'Shared on', 'Confidence', 'Bucket', 'Member name', 'In SM8', 'In Xero', 'Email', 'Phone'];
+    const sharedOnOf = { xemail: 'email', semail: 'email', xphone: 'phone', sphone: 'phone', xname: 'name', sname: 'name' };
+    const out = [];
+    for (const [key, members] of groups) {
+      const isRow = key.startsWith('row:');
+      const type = isRow ? '' : key.split(':')[0];
+      const ident = isRow ? '' : key.split(':').slice(1).join(':');
+      for (const m of members) {
+        out.push([ident, sharedOnOf[type] || '', m.dup_confidence || '', bucketDef.label,
+          m.canonical_name || '', !!m.in_sm8, !!m.in_xero, m.match_email || '', m.match_phone || '']);
+      }
+    }
+    downloadCSV(`clients-duplicates-${bucket}-${todayStr()}.csv`, headers, out);
+  };
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-3 flex-wrap">
@@ -254,9 +341,12 @@ function Duplicates({ rows, search }) {
         ))}
       </div>
 
-      <div className="text-sm font-semibold text-gray-700 mb-2">
-        {groups.length} cluster{groups.length !== 1 ? 's' : ''}
-        <span className="text-xs text-gray-400 ml-2">{inBucket.length} record{inBucket.length !== 1 ? 's' : ''}</span>
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-gray-700">
+          {groups.length} cluster{groups.length !== 1 ? 's' : ''}
+          <span className="text-xs text-gray-400 ml-2">{inBucket.length} record{inBucket.length !== 1 ? 's' : ''}</span>
+        </div>
+        <ExportButton onClick={exportDupCsv} count={inBucket.length} />
       </div>
 
       {groups.length === 0 && <div className="text-center text-gray-400 text-sm py-12">No duplicate clusters in this bucket.</div>}
@@ -288,6 +378,89 @@ function Duplicates({ rows, search }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── Missing from Xero (the invoicing-gap worklist) ────────────────────────
+function MissingFromXero({ rows, search }) {
+  // In SM8, no Xero match. Sort accepted-quote clients first (they need invoicing).
+  const list = useMemo(() => {
+    const filtered = rows.filter((c) => c.missing_from_xero).filter((c) => matchesSearch(c, search));
+    return [...filtered].sort((a, b) => {
+      if (!!b.has_accepted_quote !== !!a.has_accepted_quote) return (b.has_accepted_quote ? 1 : 0) - (a.has_accepted_quote ? 1 : 0);
+      return (a.canonical_name || '').localeCompare(b.canonical_name || '');
+    });
+  }, [rows, search]);
+  const acceptedCount = useMemo(() => list.filter((c) => c.has_accepted_quote).length, [list]);
+  const exportCsv = () => downloadCSV(`clients-missing-from-xero-${todayStr()}.csv`, CLIENT_HEADERS, list.map(clientRow));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-gray-700">
+          Missing from Xero
+          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full ml-2">{list.length}</span>
+          <span className="text-[11px] text-gray-400 ml-2">{acceptedCount} of {list.length} have an accepted quote</span>
+        </div>
+        <ExportButton onClick={exportCsv} count={list.length} />
+      </div>
+      {list.length === 0 && <div className="text-center text-gray-400 text-sm py-12">No clients missing from Xero.</div>}
+      {list.length > 0 && (
+        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+          {list.map((c) => (
+            <div key={c.directory_key} className="px-3 py-2 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[15px] font-medium text-gray-900 truncate max-w-[240px]" title={c.canonical_name}>
+                {c.canonical_name || '(unnamed)'}
+              </span>
+              {c.has_accepted_quote && <Chip bg="#D1FAE5" text="#059669">Accepted</Chip>}
+              {(c.accepted_categories || []).map((cat) => (<Chip key={cat} bg="#F3E8FF" text="#7E22CE">{cat}</Chip>))}
+              {c.created_by_rep && <span className="text-[11px] text-gray-400">· {c.created_by_rep}</span>}
+              <span className="ml-auto text-[11px] text-gray-500 font-mono">
+                {c.match_email || c.match_phone || <span className="text-gray-300 italic">no contact</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Missing from SM8 (in Xero, no ServiceM8 client — expected short) ───────
+function MissingFromSm8({ rows, search }) {
+  const list = useMemo(
+    () => rows.filter((c) => c.missing_from_sm8).filter((c) => matchesSearch(c, search))
+      .sort((a, b) => (a.canonical_name || '').localeCompare(b.canonical_name || '')),
+    [rows, search]
+  );
+  const exportCsv = () => downloadCSV(`clients-missing-from-sm8-${todayStr()}.csv`, CLIENT_HEADERS, list.map(clientRow));
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <div className="text-sm font-semibold text-gray-700">
+          Missing from ServiceM8
+          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full ml-2">{list.length}</span>
+        </div>
+        <ExportButton onClick={exportCsv} count={list.length} />
+      </div>
+      {list.length === 0 && <div className="text-center text-gray-400 text-sm py-12">No contacts missing from ServiceM8.</div>}
+      {list.length > 0 && (
+        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100">
+          {list.map((c) => (
+            <div key={c.directory_key} className="px-3 py-2 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[15px] font-medium text-gray-900 truncate max-w-[260px]" title={c.canonical_name}>
+                {c.xero_contact_name || c.canonical_name || '(unnamed)'}
+              </span>
+              <Chip bg="#CCFBF1" text="#0F766E">Xero</Chip>
+              <span className="ml-auto text-[11px] text-gray-500 font-mono">
+                {c.match_email || c.match_phone || <span className="text-gray-300 italic">no contact</span>}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -427,6 +600,8 @@ export default function ClientsTab() {
       {!loading && sub === 'all' && <AllClients rows={clients} search={search} />}
       {!loading && sub === 'accepted' && <AcceptedQuotes rows={clients} search={search} />}
       {!loading && sub === 'duplicates' && <Duplicates rows={clients} search={search} />}
+      {!loading && sub === 'missing_xero' && <MissingFromXero rows={clients} search={search} />}
+      {!loading && sub === 'missing_sm8' && <MissingFromSm8 rows={clients} search={search} />}
     </div>
   );
 }
