@@ -29,12 +29,17 @@ const ACCEPTED_STATUSES = new Set(['Work Order', 'Completed']);
 // rule — any id appearing on >1 Xero contact — also excludes these, but pinning the
 // known internal ones makes the intent explicit and robust to data drift.)
 const DENY_EMAILS = new Set([
-  'office@sunsetservices.us',
   'office@aimrg.com',
   'sunsetlandscaping123@gmail.com',
-  'office@sunsetservice.us',        // typo variant of the internal office address
   'erick@sunsetlawnservice.com',    // internal staff address (appears on many records)
 ]);
+// Internal office address family: office@ + a "sunset s…" domain on .us. Matched by
+// PATTERN (not exact) so the legit address AND its typo variants
+// (office@sunsetservices.us, office@sunsetservice.us, office@sunsetsurvices.us, …)
+// are all excluded at ANY cluster size. Applied to the normalized (lowercased/trimmed) email.
+const INTERNAL_OFFICE_RE = /^office@sunsets\w*\.us$/;
+// True for any email that must never be a usable match key or form a duplicate cluster.
+const isDenyEmail = (e: string) => DENY_EMAILS.has(e) || INTERNAL_OFFICE_RE.test(e);
 const DENY_PHONES = new Set(['6306181253']);
 
 // Duplicate-cluster band: an identifier shared by 2..DUP_BAND_MAX records is a real
@@ -147,7 +152,7 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
     const n = normName(c.Name);
     if (n) { const arr = xeroByName.get(n) || xeroByName.set(n, []).get(n)!; if (!arr.includes(c.ContactID)) arr.push(c.ContactID); }
   }
-  const emailUsable = (e: string) => !!e && !DENY_EMAILS.has(e) && xeroByEmail.get(e)?.size === 1;
+  const emailUsable = (e: string) => !!e && !isDenyEmail(e) && xeroByEmail.get(e)?.size === 1;
   const phoneUsable = (p: string) => !!p && !DENY_PHONES.has(p) && xeroByPhone.get(p)?.size === 1;
 
   // ---- 3. SM8 groupings + dup indexes ----
@@ -158,7 +163,7 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
     if (ct.active === 0 || !ct.company_uuid) continue;
     const g = ccByCompany.get(ct.company_uuid) || ccByCompany.set(ct.company_uuid, { emails: new Set(), phones: new Set() }).get(ct.company_uuid)!;
     const e = normEmail(ct.email);
-    if (e && !DENY_EMAILS.has(e)) { g.emails.add(e); (sm8EmailToCos.get(e) || sm8EmailToCos.set(e, new Set()).get(e)!).add(ct.company_uuid); }
+    if (e && !isDenyEmail(e)) { g.emails.add(e); (sm8EmailToCos.get(e) || sm8EmailToCos.set(e, new Set()).get(e)!).add(ct.company_uuid); }
     for (const p of [normPhone(ct.phone), normPhone(ct.mobile)]) {
       if (p && !DENY_PHONES.has(p)) { g.phones.add(p); (sm8PhoneToCos.get(p) || sm8PhoneToCos.set(p, new Set()).get(p)!).add(ct.company_uuid); }
     }
@@ -188,7 +193,7 @@ async function syncClientDirectory(): Promise<ClientDirectorySummary> {
 
   const xeroDupInfo = (c: XeroContact): DupInfo | null => {
     const e = normEmail(c.EmailAddress);
-    if (e && !DENY_EMAILS.has(e) && inDupBand(xeroByEmail.get(e)?.size || 0) && !emailPolluted(e)) {
+    if (e && !isDenyEmail(e) && inDupBand(xeroByEmail.get(e)?.size || 0) && !emailPolluted(e)) {
       const s = xeroByEmail.get(e)!.size;
       return { confidence: 'strong', key: `xemail:${e}`, reason: `Xero: shares email ${e} with ${s - 1} other contact(s)` };
     }
